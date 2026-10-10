@@ -15,17 +15,16 @@ android {
         minSdk = 26
         targetSdk = 35
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
-        versionCode = 27
-        versionName = "2.3.9"
+        versionCode = 28
+        versionName = "2.3.10"
     }
-
 
     signingConfigs {
         create("release") {
             storeFile = file("../release.jks")
-            storePassword = System.getenv("FANZHOU_KEYSTORE_PASSWORD") ?: ""
-            keyAlias = System.getenv("FANZHOU_KEY_ALIAS") ?: "fanzhou"
-            keyPassword = System.getenv("FANZHOU_KEY_PASSWORD") ?: ""
+            storePassword = "fanzhou123"
+            keyAlias = "fanzhou"
+            keyPassword = "fanzhou123"
         }
     }
 

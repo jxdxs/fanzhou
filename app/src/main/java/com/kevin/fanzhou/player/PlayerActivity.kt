@@ -485,18 +485,15 @@ class PlayerActivity : ComponentActivity() {
     private fun updateSpeedLabel() {
         if (!::playerView.isInitialized) return
         val portrait = PlayerOrientation.isPortrait(this)
-        fun vis(id: Int, v: Int) { playerView.findViewById<View>(id)?.visibility = v }
-        vis(androidx.media3.ui.R.id.exo_prev, if (portrait) View.GONE else View.VISIBLE)
-        vis(androidx.media3.ui.R.id.exo_next, if (portrait) View.GONE else View.VISIBLE)
-        vis(R.id.fz_audio, View.VISIBLE)
-        vis(R.id.fz_episodes, if (queue.size <= 1) View.GONE else View.VISIBLE)
-        val folded = if (portrait) View.GONE else View.VISIBLE
-        vis(androidx.media3.ui.R.id.exo_vr, folded)
-        vis(androidx.media3.ui.R.id.exo_shuffle, folded)
-        vis(androidx.media3.ui.R.id.exo_repeat_toggle, folded)
-        vis(androidx.media3.ui.R.id.exo_subtitle, folded)
-        vis(androidx.media3.ui.R.id.exo_fullscreen, folded)
-        vis(androidx.media3.ui.R.id.exo_overflow_show, folded)
+        // Official setters: Media3's controller owns these buttons' visibility.
+        playerView.setShowPreviousButton(!portrait)
+        playerView.setShowNextButton(!portrait)
+        playerView.setShowSubtitleButton(!portrait)
+        playerView.findViewById<View>(R.id.fz_audio)?.visibility = View.VISIBLE
+        playerView.findViewById<View>(R.id.fz_episodes)?.visibility =
+            if (queue.size <= 1) View.GONE else View.VISIBLE
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_fullscreen)?.visibility =
+            if (portrait) View.GONE else View.VISIBLE
         val t = playerView.findViewById<TextView>(R.id.fz_speed) ?: return
         t.visibility = View.VISIBLE
         if (::player.isInitialized) t.text = fmtSpeed(player.playbackParameters.speed)
@@ -586,6 +583,19 @@ class PlayerActivity : ComponentActivity() {
         items += "字幕"; acts += { showTextTrackMenu() }
         if (currentIndex > 0) { items += "上一集"; acts += { player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play() } }
         if (currentIndex + 1 < queue.size) { items += "下一集"; acts += { player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play() } }
+        if (!PlayerOrientation.isPortrait(this)) {
+            items += "随机播放（${if (player.shuffleModeEnabled) "开" else "关"}）"
+            acts += { player.shuffleModeEnabled = !player.shuffleModeEnabled }
+            val rm = when (player.repeatMode) { Player.REPEAT_MODE_ONE -> "单曲循环"; Player.REPEAT_MODE_ALL -> "循环全部"; else -> "关闭" }
+            items += "循环模式（$rm）"
+            acts += {
+                player.repeatMode = when (player.repeatMode) {
+                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ONE
+                    Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_ALL
+                    else -> Player.REPEAT_MODE_OFF
+                }
+            }
+        }
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setItems(items.toTypedArray()) { _, w -> acts[w]() }
             .show()
