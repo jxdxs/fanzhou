@@ -49,6 +49,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kevin.fanzhou.R
 import com.kevin.fanzhou.cloud.CloudDrive
+import com.kevin.fanzhou.cloud.Resolved
 import com.kevin.fanzhou.data.PlayItem
 import com.kevin.fanzhou.data.PlayQueue
 import com.kevin.fanzhou.data.Repo
@@ -75,7 +76,7 @@ class PlayerActivity : ComponentActivity() {
     private val originals = HashMap<Int, PlayItem>()
     private val qualityLabel = HashMap<Int, String>()
     /** Cloud quality ladder (best first) per queue index, for automatic step-down on failure. */
-    private val qualityLadder = HashMap<Int, List<Pair<String, CloudDrive.Resolved>>>()
+    private val qualityLadder = HashMap<Int, List<Pair<String, Resolved>>>()
     /** Next ladder step to try per queue index (0 = best transcoded rendition). */
     private val qualityStep = HashMap<Int, Int>()
     private val ladderBusy = HashSet<Int>()
