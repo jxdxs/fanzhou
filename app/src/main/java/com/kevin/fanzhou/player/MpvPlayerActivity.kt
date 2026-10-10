@@ -787,6 +787,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             items += "字幕"; acts += { showTrackMenu("sub") }
             if (currentIndex > 0) { items += "上一集"; acts += { playIndex(currentIndex - 1) } }
             if (currentIndex + 1 < queue.size) { items += "下一集"; acts += { playIndex(currentIndex + 1) } }
+            items += "防误触"; acts += { lockScreen() }
             AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setItems(items.toTypedArray()) { _, which -> acts[which]() }
                 .show()
@@ -801,9 +802,17 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             mpv?.setPropertyString("hwdec", if (Repo.store.mpvHwdec) "mediacodec-copy" else "no")
             showHint(if (Repo.store.mpvHwdec) "硬件解码" else "软件解码")
         }
+        items += "防误触"; acts += { lockScreen() }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setItems(items.toTypedArray()) { _, which -> acts[which]() }
             .show()
+    }
+
+    /** 防误触：藏起控制条，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */
+    private fun lockScreen() {
+        handler.removeCallbacks(hideControlsRunnable)
+        hideControls()
+        ScreenLock.lock(this)
     }
 
     private fun fmtSpeed(s: Double) = "%.2f".format(s).trimEnd('0').trimEnd('.')

@@ -610,9 +610,18 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
+        items += "防误触"; acts += { lockScreen() }
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setItems(items.toTypedArray()) { _, w -> acts[w]() }
             .show()
+    }
+
+    /** 防误触：藏起控制条与顶栏，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */
+    private fun lockScreen() {
+        playerView.hideController()
+        playerView.controllerAutoShow = false
+        topBar.visibility = View.GONE
+        ScreenLock.lock(this) { playerView.controllerAutoShow = true }
     }
 
     /** Subtitle menu: 在线搜索 + 关闭 + embedded/external tracks. */
