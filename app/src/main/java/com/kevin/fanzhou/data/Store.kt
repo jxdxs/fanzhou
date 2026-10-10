@@ -67,10 +67,12 @@ class Store(context: Context) {
         get() = prefs.getBoolean("auto_next", true)
         set(v) { prefs.edit().putBoolean("auto_next", v).apply() }
 
-    /** Cloud drives: when the original quality fails (or stalls), step down the transcoded ladder automatically. */
-    var autoQualityFallback: Boolean
-        get() = prefs.getBoolean("auto_quality_fallback", true)
-        set(v) { prefs.edit().putBoolean("auto_quality_fallback", v).apply() }
+    /** Manually picked cloud quality label remembered per folder ("source:folder" key). */
+    fun qualityForFolder(key: String): String? = prefs.getString("quality_folder_$key", null)
+    fun setQualityForFolder(key: String, label: String?) {
+        if (label.isNullOrEmpty()) prefs.edit().remove("quality_folder_$key").apply()
+        else prefs.edit().putString("quality_folder_$key", label).apply()
+    }
 
     var gridColumnsMin: Int
         get() = prefs.getInt("grid_min", 110)

@@ -166,6 +166,8 @@ data class PlayItem(
     val resumeKey: String? = null,
     val subtitles: List<SubTrack> = emptyList(),
     val cloudFile: com.kevin.fanzhou.cloud.CloudFile? = null,
+    /** "sourceId:folderId" for cloud items; scopes the remembered-quality feature to one folder. */
+    val cloudFolderKey: String? = null,
     val mime: String? = null,
     /** Container/extension hint (mkv, iso, rmvb…) used to pick the player core. */
     val container: String? = null,

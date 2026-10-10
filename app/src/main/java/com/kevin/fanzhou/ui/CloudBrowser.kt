@@ -248,7 +248,9 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     fun addRecent(f: CloudFile) = store.addCloudRecent(
         sid, CloudRecent(f.id, f.name, f.extra, f.size, f.thumb, f.duration, dirId, title, System.currentTimeMillis())
     )
-    fun playItems(fromStart: CloudFile?) = videos.map { v -> drive.playItem(v, all).let { if (v == fromStart) it.copy(startMs = 0) else it } }
+    fun playItems(fromStart: CloudFile?) = videos.map { v ->
+        drive.playItem(v, all).copy(cloudFolderKey = "$sid:$dir").let { if (v == fromStart) it.copy(startMs = 0) else it }
+    }
     fun play(f: CloudFile, fromStart: Boolean = false, mpv: Boolean = false) {
         addRecent(f)
         val list = playItems(if (fromStart) f else null)
@@ -280,9 +282,9 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
             val vids = sibs?.filter { it.isVideo }.orEmpty()
             val idx = vids.indexOfFirst { it.id == r.id }
             if (sibs == null || idx < 0 || vids.size <= 1) {
-                PlayerCore.start(context, listOf(drive.playItem(f, emptyList())), 0)
+                PlayerCore.start(context, listOf(drive.playItem(f, emptyList()).copy(cloudFolderKey = "$sid:$dir")), 0)
             } else {
-                PlayerCore.start(context, vids.map { drive.playItem(it, sibs) }, idx)
+                PlayerCore.start(context, vids.map { drive.playItem(it, sibs).copy(cloudFolderKey = "$sid:$dir") }, idx)
             }
         }
     }

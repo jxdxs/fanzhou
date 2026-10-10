@@ -75,11 +75,10 @@ class PlayerActivity : ComponentActivity() {
     /** Original (direct-play) item per queue index, kept once a quality switch replaces it. */
     private val originals = HashMap<Int, PlayItem>()
     private val qualityLabel = HashMap<Int, String>()
-    /** Cloud quality ladder (best first) per queue index, for automatic step-down on failure. */
-    private val qualityLadder = HashMap<Int, List<Pair<String, Resolved>>>()
-    /** Next ladder step to try per queue index (0 = best transcoded rendition). */
-    private val qualityStep = HashMap<Int, Int>()
-    private val ladderBusy = HashSet<Int>()
+    /** Cloud quality renditions (best first) fetched per queue index, reused by the 画质 menu. */
+    private val qualityCache = HashMap<Int, List<Pair<String, Resolved>>>()
+    /** Queue indexes whose remembered per-folder quality has already been applied. */
+    private val folderQualityApplied = HashSet<Int>()
     private var resizeMode = 0
     private val resizeModes = intArrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FIT,
@@ -144,7 +143,7 @@ class PlayerActivity : ComponentActivity() {
         coreForced = intent.getBooleanExtra(PlayerCore.EXTRA_FORCED, false)
         switchedToMpv = false
         transcodedIds.clear(); originals.clear(); qualityLabel.clear()
-        qualityLadder.clear(); qualityStep.clear(); ladderBusy.clear()
+        qualityCache.clear(); folderQualityApplied.clear()
         reportStopCurrent()
         loadQueueFromIntent(intent)
         startQueue()
@@ -178,6 +177,7 @@ class PlayerActivity : ComponentActivity() {
             keepScreenOn = true
             setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { vis ->
                 topBar.visibility = vis
+                if (vis == View.VISIBLE) updateSpeedLabel()
                 if (vis != View.VISIBLE) hideSystemBars()
             })
         }
@@ -225,6 +225,7 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<TextView>(R.id.fz_speed)?.setOnClickListener { showSpeedPicker(it) }
         playerView.findViewById<View>(R.id.fz_audio)?.setOnClickListener { showAudioTrackMenu() }
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { showPlayerSettingsMenu() }
         updateSpeedLabel()
 
         hintView = TextView(this).apply {
@@ -386,7 +387,6 @@ class PlayerActivity : ComponentActivity() {
         player.addListener(listener)
         startQueue()
         handler.postDelayed(progressTick, 10_000)
-        handler.postDelayed(stallTick, 5_000)
     }
 
     private fun mediaSourceFactory(headers: Map<String, String>): DefaultMediaSourceFactory {
@@ -437,6 +437,7 @@ class PlayerActivity : ComponentActivity() {
     private fun onItemStarted() {
         val p = queue.getOrNull(currentIndex) ?: return
         updateSpeedLabel()
+        applyFolderQuality()
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
         val id = p.jfItemId ?: return
         val sid = p.sourceId ?: return
@@ -477,16 +478,49 @@ class PlayerActivity : ComponentActivity() {
     private val speedChoices = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f, 5f)
     private fun fmtSpeed(s: Float) = "%.2f".format(s).trimEnd('0').trimEnd('.') + "x"
 
-    /** Bottom-bar 倍速 label + 音轨/选集 buttons: landscape only (portrait has no spare width). */
+    /**
+     * Bottom bar. Portrait keeps only 快退/播放/快进 on the left and 倍速/音轨/选集 + gear on the
+     * right; 上一集/下一集、字幕 and the rest fold into the gear menu (see showPlayerSettingsMenu).
+     */
     private fun updateSpeedLabel() {
         if (!::playerView.isInitialized) return
         val portrait = PlayerOrientation.isPortrait(this)
-        playerView.findViewById<View>(R.id.fz_audio)?.visibility = if (portrait) View.GONE else View.VISIBLE
-        playerView.findViewById<View>(R.id.fz_episodes)?.visibility =
-            if (portrait || queue.size <= 1) View.GONE else View.VISIBLE
+        fun vis(id: Int, v: Int) { playerView.findViewById<View>(id)?.visibility = v }
+        vis(androidx.media3.ui.R.id.exo_prev, if (portrait) View.GONE else View.VISIBLE)
+        vis(androidx.media3.ui.R.id.exo_next, if (portrait) View.GONE else View.VISIBLE)
+        vis(R.id.fz_audio, View.VISIBLE)
+        vis(R.id.fz_episodes, if (queue.size <= 1) View.GONE else View.VISIBLE)
+        val folded = if (portrait) View.GONE else View.VISIBLE
+        vis(androidx.media3.ui.R.id.exo_vr, folded)
+        vis(androidx.media3.ui.R.id.exo_shuffle, folded)
+        vis(androidx.media3.ui.R.id.exo_repeat_toggle, folded)
+        vis(androidx.media3.ui.R.id.exo_subtitle, folded)
+        vis(androidx.media3.ui.R.id.exo_fullscreen, folded)
+        vis(androidx.media3.ui.R.id.exo_overflow_show, folded)
         val t = playerView.findViewById<TextView>(R.id.fz_speed) ?: return
-        t.visibility = if (portrait) View.GONE else View.VISIBLE
+        t.visibility = View.VISIBLE
         if (::player.isInitialized) t.text = fmtSpeed(player.playbackParameters.speed)
+    }
+
+    /** If the user manually picked a quality in this cloud folder before, start new episodes at it. */
+    private fun applyFolderQuality() {
+        val idx = currentIndex
+        val p = queue.getOrNull(idx) ?: return
+        val cf = p.cloudFile ?: return
+        val key = p.cloudFolderKey ?: return
+        if (qualityLabel[idx] != null || !folderQualityApplied.add(idx)) return
+        val remembered = Repo.store.qualityForFolder(key) ?: return
+        val sid = p.sourceId ?: return
+        lifecycleScope.launch {
+            val qs = qualityCache[idx] ?: runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                .also { if (it.isNotEmpty()) qualityCache[idx] = it }
+            if (idx != currentIndex) return@launch
+            val hit = qs.firstOrNull { it.first == remembered } ?: return@launch
+            val pos = player.currentPosition.coerceAtLeast(0)
+            qualityLabel[idx] = hit.first
+            replaceCurrent(p.copy(url = hit.second.url, headers = hit.second.headers, mime = hit.second.mime, startMs = pos), pos)
+            showHint("画质：${hit.first}（本文件夹已记住）")
+        }
     }
 
     /** Bottom-bar 选集 button: jump within the current queue; popup anchored at the button. */
@@ -499,33 +533,6 @@ class PlayerActivity : ComponentActivity() {
                 player.play()
                 showHint("第 ${which + 1} 集")
             }
-        }
-    }
-
-    // ---------------- stall watchdog ----------------
-
-    private var stallLastPos = -1L
-    private var stallSince = 0L
-    private val stallTick = object : Runnable {
-        override fun run() {
-            checkStall()
-            handler.postDelayed(this, 5_000)
-        }
-    }
-
-    /** Original/transcoded cloud playback that buffers without progress for 25s counts as failed. */
-    private fun checkStall() {
-        if (!::player.isInitialized || currentIndex < 0) return
-        val p = queue.getOrNull(currentIndex) ?: return
-        if (p.cloudFile == null || !player.playWhenReady || player.playbackState != Player.STATE_BUFFERING) {
-            stallSince = 0; return
-        }
-        val pos = player.currentPosition
-        if (pos != stallLastPos) { stallLastPos = pos; stallSince = System.currentTimeMillis(); return }
-        if (stallSince == 0L) { stallSince = System.currentTimeMillis(); return }
-        if (System.currentTimeMillis() - stallSince > 25_000) {
-            stallSince = 0; stallLastPos = -1
-            if (!tryCloudTranscode(p, "播放卡顿")) toast("播放卡顿，且没有可切换的画质")
         }
     }
 
@@ -569,6 +576,55 @@ class PlayerActivity : ComponentActivity() {
         "jpn", "ja" -> "日语"
         "kor", "ko" -> "韩语"
         else -> l
+    }
+
+    /** Gear menu: hosts the buttons folded out of the portrait bottom bar, plus the usual options. */
+    private fun showPlayerSettingsMenu() {
+        if (!::player.isInitialized) return
+        val items = ArrayList<String>()
+        val acts = ArrayList<() -> Unit>()
+        items += "字幕"; acts += { showTextTrackMenu() }
+        if (currentIndex > 0) { items += "上一集"; acts += { player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play() } }
+        if (currentIndex + 1 < queue.size) { items += "下一集"; acts += { player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play() } }
+        items += "音轨"; acts += { showAudioTrackMenu() }
+        items += "倍速"; acts += { playerView.findViewById<View>(R.id.fz_speed)?.let { showSpeedPicker(it) } }
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setItems(items.toTypedArray()) { _, w -> acts[w]() }
+            .show()
+    }
+
+    /** Subtitle picker (used to live on Media3's own subtitle button / settings dialog). */
+    private fun showTextTrackMenu() {
+        if (!::player.isInitialized) return
+        val choices = ArrayList<Pair<Tracks.Group, Int>>()
+        for (g in player.currentTracks.groups) {
+            if (g.type != C.TRACK_TYPE_TEXT) continue
+            for (i in 0 until g.length) choices.add(g to i)
+        }
+        if (choices.isEmpty()) { toast("没有字幕"); return }
+        val labels = listOf("关闭字幕") + choices.map { (g, i) ->
+            val f = g.getTrackFormat(i)
+            listOfNotNull(f.label?.takeIf { it.isNotEmpty() }, f.language?.let { audioLangName(it) })
+                .joinToString(" · ").ifEmpty { "字幕" }
+        }
+        val textOff = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val sel = if (textOff) 0 else choices.indexOfFirst { (g, i) -> g.isTrackSelected(i) } + 1
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕")
+            .setSingleChoiceItems(labels.toTypedArray(), sel) { d, which ->
+                d.dismiss()
+                player.trackSelectionParameters = if (which == 0) {
+                    player.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                } else {
+                    val (g, i) = choices[which - 1]
+                    player.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
+                        .build()
+                }
+            }
+            .show()
     }
 
     private fun showSpeedPicker(anchor: View) {
@@ -628,48 +684,9 @@ class PlayerActivity : ComponentActivity() {
         player.play()
     }
 
-    /** Cloud drives: step down the transcoded-quality ladder (best first) until one plays. */
-    private fun tryCloudTranscode(p: PlayItem, reason: String): Boolean {
-        if (!Repo.store.autoQualityFallback) return false
-        val f = p.cloudFile ?: return false
-        val sid = p.sourceId ?: return false
-        val idx = currentIndex
-        if (idx < 0) return false
-        if (!ladderBusy.add(idx)) return true // a step-down is already in flight
-        val pos = player.currentPosition.coerceAtLeast(0)
-        lifecycleScope.launch {
-            try {
-                val ladder = qualityLadder[idx] ?: run {
-                    val qs = runCatching { CloudDrive.get(sid)?.qualities(f) }.getOrNull().orEmpty()
-                    val list = if (qs.isNotEmpty()) qs else
-                        runCatching { CloudDrive.get(sid)?.resolveTranscode(f) }.getOrNull()
-                            ?.let { listOf("转码" to it) }.orEmpty()
-                    qualityLadder[idx] = list
-                    // If the user had manually picked a rendition, continue below it.
-                    val cur = qualityLabel[idx]
-                    qualityStep[idx] = if (cur == null) 0
-                        else (list.indexOfFirst { it.first == cur } + 1).coerceAtLeast(0)
-                    list
-                }
-                val step = qualityStep[idx] ?: 0
-                if (step >= ladder.size) { toast("$reason，且没有更低的画质可用了"); return@launch }
-                val (label, r) = ladder[step]
-                qualityStep[idx] = step + 1
-                qualityLabel[idx] = label
-                originals.getOrPut(idx) { p }
-                toast("$reason，已自动切换到 $label")
-                if (idx == currentIndex) replaceCurrent(p.copy(url = r.url, headers = r.headers, mime = r.mime, startMs = pos), pos)
-            } finally {
-                ladderBusy.remove(idx)
-            }
-        }
-        return true
-    }
-
     /** For Jellyfin items, fall back to server-side transcoding (HLS) at the current position. */
     private fun tryTranscode(reason: String): Boolean {
         val p = queue.getOrNull(currentIndex) ?: return false
-        if (p.cloudFile != null) return tryCloudTranscode(p, reason)
         val id = p.jfItemId ?: return false
         if (!transcodedIds.add(id)) return false
         val client = Repo.jellyfin(p.sourceId ?: return false) ?: return false
@@ -717,6 +734,7 @@ class PlayerActivity : ComponentActivity() {
                 showHint("正在获取画质…", sticky = true)
                 lifecycleScope.launch {
                     val qs = runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                    if (qs.isNotEmpty()) qualityCache[idx] = qs
                     hintView.visibility = View.GONE
                     if (idx != currentIndex) return@launch
                     val opts = listOf<Pair<String, (() -> PlayItem)>>("原画" to { orig }) + qs.map { (label, r) ->
@@ -743,9 +761,14 @@ class PlayerActivity : ComponentActivity() {
                 val pos = player.currentPosition
                 val item = make().copy(startMs = pos)
                 qualityLabel[idx] = label
-                qualityLadder[idx]?.let { l -> qualityStep[idx] = (l.indexOfFirst { it.first == label } + 1).coerceAtLeast(0) }
-                    ?: qualityStep.remove(idx)
-                if (label == "原画") qualityStep[idx] = 0
+                // Remember the manual pick for this cloud folder; later episodes start at it.
+                (originals[idx] ?: queue.getOrNull(idx))?.let { o ->
+                    val key = o.cloudFolderKey
+                    if (key != null && o.cloudFile != null) {
+                        folderQualityApplied.add(idx)
+                        Repo.store.setQualityForFolder(key, if (label == "原画") null else label)
+                    }
+                }
                 replaceCurrent(item, pos)
                 if (label == "原画") originals.remove(idx)
                 showHint("画质：$label")
