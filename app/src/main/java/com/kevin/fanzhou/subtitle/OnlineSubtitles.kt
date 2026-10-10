@@ -169,7 +169,8 @@ Hit("SubDL", title, langName(o.str("lang")), dl)
 // ---------------- download ----------------
 
 /** Downloads the picked hit into [dir]; returns a UTF-8 subtitle file ready to load. */
-suspend fun fetch(hit: Hit, fileTitle: String, dir: File): File = withContext(Dispatchers.IO) {
+suspend fun fetch(hit: Hit, fileTitle: String, dir: File): File {
+return withContext(Dispatchers.IO) {
 dir.mkdirs()
 val bytes = when (hit.provider) {
 "射手" -> fetchAssrt(hit.ref, fileTitle)
@@ -180,7 +181,8 @@ val (data, ext) = unwrap(bytes, fileTitle)
 val safe = fileTitle.replace(Regex("""[^\p{L}\p{N}]+"""), "_").take(40).trim('_').ifEmpty { "sub"}
 val out = File(dir, "${safe}_${hit.provider}.$ext")
 out.writeBytes(toUtf8(data))
-return out
+out
+}
 }
 
 private fun fetchAssrt(id: String, fileTitle: String): ByteArray {
