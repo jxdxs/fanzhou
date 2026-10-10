@@ -51,7 +51,9 @@ object EpisodePopup {
         }
         scroll.measure(View.MeasureSpec.makeMeasureSpec((228 * dp).toInt(), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
         val loc = IntArray(2).also { anchor.getLocationInWindow(it) }
-        val maxH = (loc[1] - 8 * dp).toInt().coerceAtLeast((160 * dp).toInt())
+        // Cap the height: at most ~7 rows / 45% of the screen, whichever is smaller; the list scrolls.
+        val screenHCap = (ctx.resources.displayMetrics.heightPixels * 0.45f).toInt()
+        val maxH = minOf((loc[1] - 8 * dp).toInt(), screenHCap, (300 * dp).toInt()).coerceAtLeast((140 * dp).toInt())
         val h = scroll.measuredHeight.coerceAtMost(maxH)
         popup.height = h
         val screenW = ctx.resources.displayMetrics.widthPixels
