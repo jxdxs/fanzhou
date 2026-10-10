@@ -189,6 +189,10 @@ class JellyfinClient(val source: Source) {
         else backdrop(item, maxWidth) ?: primaryImage(item)
 
     fun streamUrl(itemId: String, mediaSourceId: String?): String {
+        // 飞牛影视只认最简形式（和第三方客户端 cineisle 一致）：多余的 MediaSourceId
+        // （列表里拿不到真实媒体源 ID，只能拿视频 ID 顶上）会被它严格校验拒绝。
+        // 鉴权走请求头（authHeaders / Repo.http 拦截器），api_key 留作兼容。
+        if (source.isFnos) return "$base/Videos/$itemId/stream?static=true&api_key=$token"
         val ms = mediaSourceId ?: itemId
         return "$base/Videos/$itemId/stream?static=true&MediaSourceId=$ms&api_key=$token&DeviceId=${Repo.store.deviceId}"
     }
