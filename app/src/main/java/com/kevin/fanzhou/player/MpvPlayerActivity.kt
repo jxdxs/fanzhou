@@ -41,6 +41,9 @@ import com.kevin.fanzhou.R
 import com.kevin.fanzhou.cloud.CloudDrive
 import com.kevin.fanzhou.cloud.Resolved
 import com.kevin.fanzhou.data.PlayItem
+import com.kevin.fanzhou.subtitle.OnlineSubtitles
+import android.widget.EditText
+import java.io.File
 import com.kevin.fanzhou.data.PlayQueue
 import com.kevin.fanzhou.data.Repo
 import com.kevin.fanzhou.data.SmbClient
@@ -84,6 +87,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private val folderQualityApplied = HashSet<Int>()
     /** Queue indexes that already used the one-shot Jellyfin transcode fallback. */
     private val jfFallbackTried = HashSet<Int>()
+    /** "idx:path" of online subtitles already added to mpv. */
+    private val addedOnlineSubs = HashSet<String>()
     private var coreForced = false
     private var switching = false
 
@@ -336,6 +341,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val m = mpv ?: return
         m.setPropertyString("start", "none")
         val p = queue.getOrNull(currentIndex) ?: return
+        attachSavedSub(p)
         // External subtitles (sibling files / Jellyfin / cloud).
         p.subtitles.forEach { s ->
             lifecycleScope.launch {
@@ -638,9 +644,24 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private fun showTrackMenu(type: String) {
         val list = tracks(type)
         val isSub = type == "sub"
-        if (list.isEmpty()) { toast(if (isSub) "没有字幕" else "没有可选音轨"); return }
-        val labels = (if (isSub) listOf("关闭字幕") else emptyList()) + list.map { it.label }
-        val sel = list.indexOfFirst { it.selected }.let { if (isSub) (if (it < 0) 0 else it + 1) else it }
+        if (isSub) {
+            val items = ArrayList<String>()
+            val acts = ArrayList<() -> Unit>()
+            items += "在线搜索字幕…"; acts += { showOnlineSubSearch() }
+            items += "关闭字幕"; acts += { mpv?.setPropertyString("sid", "no") }
+            list.forEach { t ->
+                items += t.label
+                acts += { mpv?.setPropertyString("sid", t.id.toString()) }
+            }
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("字幕")
+                .setItems(items.toTypedArray()) { _, w -> acts[w]() }
+                .show()
+            return
+        }
+        if (list.isEmpty()) { toast("没有可选音轨"); return }
+        val labels = list.map { it.label }
+        val sel = list.indexOfFirst { it.selected }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(if (isSub) "字幕" else "音轨")
             .setSingleChoiceItems(labels.toTypedArray(), sel) { d, which ->
@@ -650,6 +671,67 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 else mpv?.setPropertyString(prop, list[if (isSub) which - 1 else which].id.toString())
             }
             .show()
+    }
+
+    /** Search the configured online subtitle providers, download a pick and attach it. */
+    private fun showOnlineSubSearch() {
+        val idx = currentIndex
+        val p = originals[idx] ?: queue.getOrNull(idx) ?: return
+        if (!OnlineSubtitles.anyConfigured()) { toast("请先到「设置 → 在线字幕」填入至少一家的令牌"); return }
+        val input = EditText(this).apply {
+            setText(OnlineSubtitles.cleanQuery(p.title))
+            setSingleLine(true)
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("在线搜索字幕")
+            .setView(input)
+            .setPositiveButton("搜索") { _, _ ->
+                val q = input.text.toString().trim()
+                if (q.length < 2) { toast("关键词太短"); return@setPositiveButton }
+                showHint("正在搜索字幕…", sticky = true)
+                lifecycleScope.launch {
+                    val hits = runCatching { OnlineSubtitles.searchAll(q, p.title) }.getOrDefault(emptyList())
+                    hintView.visibility = View.GONE
+                    if (hits.isEmpty()) { toast("没有搜到字幕，可以换个关键词再试"); return@launch }
+                    val labels = hits.map { "【${it.provider}】${it.lang} · ${it.title}" }
+                    AlertDialog.Builder(this@MpvPlayerActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                        .setTitle("选择字幕")
+                        .setItems(labels.toTypedArray()) { _, w -> downloadOnlineSub(hits[w], idx) }
+                        .show()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun downloadOnlineSub(hit: OnlineSubtitles.Hit, idx: Int) {
+        val p = originals[idx] ?: queue.getOrNull(idx) ?: return
+        showHint("正在下载字幕…", sticky = true)
+        lifecycleScope.launch {
+            val file = runCatching {
+                OnlineSubtitles.fetch(hit, p.title, File(cacheDir, "subs"))
+            }.getOrNull()
+            hintView.visibility = View.GONE
+            if (file == null) { toast("字幕下载失败"); return@launch }
+            p.resumeKey?.let { Repo.store.saveSub(it, file.absolutePath) }
+            if (idx == currentIndex) addOnlineSub(file)
+            toast("字幕已加载：${hit.provider}")
+        }
+    }
+
+    private fun addOnlineSub(file: File) {
+        val tag = "$currentIndex:${file.absolutePath}"
+        if (!addedOnlineSubs.add(tag)) return
+        mpv?.command(arrayOf("sub-add", file.absolutePath, "select", "在线字幕"))
+    }
+
+    /** Re-attach the subtitle previously downloaded for this item, if any. */
+    private fun attachSavedSub(p: PlayItem) {
+        val key = p.resumeKey ?: return
+        val path = Repo.store.savedSub(key) ?: return
+        val file = File(path)
+        if (file.exists()) addOnlineSub(file)
     }
 
     private fun showSettingsMenu() {

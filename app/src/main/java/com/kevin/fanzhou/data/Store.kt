@@ -128,6 +128,21 @@ class Store(context: Context) {
     fun position(key: String): Long = posPrefs.getLong(key, 0)
     fun savePosition(key: String, ms: Long) { posPrefs.edit().putLong(key, ms).apply() }
 
+    // ---- online subtitle providers (user's own credentials) ----
+    var assrtToken: String
+        get() = prefs.getString("assrt_token", "") ?: ""
+        set(v) { prefs.edit().putString("assrt_token", v.trim()).apply() }
+    var subdlKey: String
+        get() = prefs.getString("subdl_key", "") ?: ""
+        set(v) { prefs.edit().putString("subdl_key", v.trim()).apply() }
+    var osApiKey: String
+        get() = prefs.getString("os_api_key", "") ?: ""
+        set(v) { prefs.edit().putString("os_api_key", v.trim()).apply() }
+
+    /** Downloaded online subtitle cached per item (resumeKey -> local file path). */
+    fun savedSub(resumeKey: String): String? = prefs.getString("osub_$resumeKey", null)
+    fun saveSub(resumeKey: String, path: String) { prefs.edit().putString("osub_$resumeKey", path).apply() }
+
     fun tmdbCached(key: String): String? = tmdbPrefs.getString(key, null)
     fun tmdbPut(key: String, value: String) { tmdbPrefs.edit().putString(key, value).apply() }
     fun clearTmdbCache() { tmdbPrefs.edit().clear().apply() }

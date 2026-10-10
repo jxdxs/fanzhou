@@ -24,6 +24,9 @@ fun SettingsScreen() {
     val store = Repo.store
     val context = LocalContext.current
     var tmdb by remember { mutableStateOf(store.tmdbKey) }
+    var assrtT by remember { mutableStateOf(store.assrtToken) }
+    var subdlK by remember { mutableStateOf(store.subdlKey) }
+    var osK by remember { mutableStateOf(store.osApiKey) }
     var speed by remember { mutableFloatStateOf(store.defaultSpeed) }
     var step by remember { mutableIntStateOf(store.seekStepSec) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
@@ -82,6 +85,16 @@ fun SettingsScreen() {
                     Button(onClick = { store.tmdbKey = tmdb; Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show() }) { Text("保存") }
                     Spacer(Modifier.width(10.dp))
                     OutlinedButton(onClick = { store.clearTmdbCache(); Toast.makeText(context, "已清除海报缓存", Toast.LENGTH_SHORT).show() }) { Text("清除匹配缓存") }
+                }
+            }
+            Group("在线字幕", listOf(store.assrtToken, store.subdlKey, store.osApiKey).count { it.isNotBlank() }.let { if (it == 0) "未设置" else "已接入 $it 家" }) {
+                Text("播放没有字幕的资源时，可在字幕菜单里点「在线搜索字幕」。填哪家的令牌就用哪家搜索，可都填。", fontSize = 12.sp, color = TextDim)
+                OutlinedTextField(assrtT, { assrtT = it }, label = { Text("射手网 assrt Token") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(subdlK, { subdlK = it }, label = { Text("SubDL API Key") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(osK, { osK = it }, label = { Text("OpenSubtitles API Key") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("OpenSubtitles 不登录账号时，每天可下载 5 条；射手网和 SubDL 没有按天卡死的限制。下载的字幕会缓存在本机，下次播同一集自动带上。", fontSize = 12.sp, color = TextDim)
+                Row {
+                    Button(onClick = { store.assrtToken = assrtT; store.subdlKey = subdlK; store.osApiKey = osK; Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show() }) { Text("保存") }
                 }
             }
             BackupSettings { t, sum, c -> Group(t, sum, c) }

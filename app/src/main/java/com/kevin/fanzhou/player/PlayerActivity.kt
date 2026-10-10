@@ -51,6 +51,10 @@ import com.kevin.fanzhou.R
 import com.kevin.fanzhou.cloud.CloudDrive
 import com.kevin.fanzhou.cloud.Resolved
 import com.kevin.fanzhou.data.PlayItem
+import com.kevin.fanzhou.data.SubTrack
+import com.kevin.fanzhou.subtitle.OnlineSubtitles
+import android.widget.EditText
+import java.io.File
 import com.kevin.fanzhou.data.PlayQueue
 import com.kevin.fanzhou.data.Repo
 import kotlinx.coroutines.launch
@@ -79,6 +83,10 @@ class PlayerActivity : ComponentActivity() {
     private val qualityCache = HashMap<Int, List<Pair<String, Resolved>>>()
     /** Queue indexes whose remembered per-folder quality has already been applied. */
     private val folderQualityApplied = HashSet<Int>()
+    /** Label of an online subtitle to select once its track appears. */
+    private var pendingOnlineSubLabel: String? = null
+    /** Queue indexes whose cached online subtitle has already been attached. */
+    private val savedSubAttached = HashSet<Int>()
     private var resizeMode = 0
     private val resizeModes = intArrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FIT,
@@ -143,7 +151,7 @@ class PlayerActivity : ComponentActivity() {
         coreForced = intent.getBooleanExtra(PlayerCore.EXTRA_FORCED, false)
         switchedToMpv = false
         transcodedIds.clear(); originals.clear(); qualityLabel.clear()
-        qualityCache.clear(); folderQualityApplied.clear()
+        qualityCache.clear(); folderQualityApplied.clear(); savedSubAttached.clear()
         reportStopCurrent()
         loadQueueFromIntent(intent)
         startQueue()
@@ -438,6 +446,7 @@ class PlayerActivity : ComponentActivity() {
         val p = queue.getOrNull(currentIndex) ?: return
         updateSpeedLabel()
         applyFolderQuality()
+        attachSavedSub()
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
         val id = p.jfItemId ?: return
         val sid = p.sourceId ?: return
@@ -601,7 +610,7 @@ class PlayerActivity : ComponentActivity() {
             .show()
     }
 
-    /** Subtitle picker (used to live on Media3's own subtitle button / settings dialog). */
+    /** Subtitle menu: 在线搜索 + 关闭 + embedded/external tracks. */
     private fun showTextTrackMenu() {
         if (!::player.isInitialized) return
         val choices = ArrayList<Pair<Tracks.Group, Int>>()
@@ -609,30 +618,110 @@ class PlayerActivity : ComponentActivity() {
             if (g.type != C.TRACK_TYPE_TEXT) continue
             for (i in 0 until g.length) choices.add(g to i)
         }
-        if (choices.isEmpty()) { toast("没有字幕"); return }
-        val labels = listOf("关闭字幕") + choices.map { (g, i) ->
-            val f = g.getTrackFormat(i)
-            listOfNotNull(f.label?.takeIf { it.isNotEmpty() }, f.language?.let { audioLangName(it) })
-                .joinToString(" · ").ifEmpty { "字幕" }
+        val items = ArrayList<String>()
+        val acts = ArrayList<() -> Unit>()
+        items += "在线搜索字幕…"; acts += { showOnlineSubSearch() }
+        items += "关闭字幕"
+        acts += {
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
         }
-        val textOff = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
-        val sel = if (textOff) 0 else choices.indexOfFirst { (g, i) -> g.isTrackSelected(i) } + 1
+        choices.forEach { (g, i) ->
+            val f = g.getTrackFormat(i)
+            items += listOfNotNull(f.label?.takeIf { it.isNotEmpty() }, f.language?.let { audioLangName(it) })
+                .joinToString(" · ").ifEmpty { "字幕" }
+            acts += {
+                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
+                    .build()
+            }
+        }
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("字幕")
-            .setSingleChoiceItems(labels.toTypedArray(), sel) { d, which ->
-                d.dismiss()
-                player.trackSelectionParameters = if (which == 0) {
-                    player.trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
-                } else {
-                    val (g, i) = choices[which - 1]
-                    player.trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                        .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
-                        .build()
+            .setItems(items.toTypedArray()) { _, w -> acts[w]() }
+            .show()
+    }
+
+    /** Search the configured online subtitle providers, download a pick and attach it. */
+    private fun showOnlineSubSearch() {
+        val idx = currentIndex
+        val p = originals[idx] ?: queue.getOrNull(idx) ?: return
+        if (!OnlineSubtitles.anyConfigured()) { toast("请先到「设置 → 在线字幕」填入至少一家的令牌"); return }
+        val input = EditText(this).apply {
+            setText(OnlineSubtitles.cleanQuery(p.title))
+            setSingleLine(true)
+            setSelection(text.length)
+        }
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("在线搜索字幕")
+            .setView(input)
+            .setPositiveButton("搜索") { _, _ ->
+                val q = input.text.toString().trim()
+                if (q.length < 2) { toast("关键词太短"); return@setPositiveButton }
+                showHint("正在搜索字幕…", sticky = true)
+                lifecycleScope.launch {
+                    val hits = runCatching { OnlineSubtitles.searchAll(q, p.title) }.getOrDefault(emptyList())
+                    hintView.visibility = View.GONE
+                    if (hits.isEmpty()) { toast("没有搜到字幕，可以换个关键词再试"); return@launch }
+                    val labels = hits.map { "【${it.provider}】${it.lang} · ${it.title}" }
+                    android.app.AlertDialog.Builder(this@PlayerActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                        .setTitle("选择字幕")
+                        .setItems(labels.toTypedArray()) { _, w -> downloadOnlineSub(hits[w], idx) }
+                        .show()
                 }
             }
+            .setNegativeButton("取消", null)
             .show()
+    }
+
+    private fun downloadOnlineSub(hit: OnlineSubtitles.Hit, idx: Int) {
+        val p = originals[idx] ?: queue.getOrNull(idx) ?: return
+        showHint("正在下载字幕…", sticky = true)
+        lifecycleScope.launch {
+            val file = runCatching {
+                OnlineSubtitles.fetch(hit, p.title, File(cacheDir, "subs"))
+            }.getOrNull()
+            hintView.visibility = View.GONE
+            if (file == null) { toast("字幕下载失败"); return@launch }
+            p.resumeKey?.let { Repo.store.saveSub(it, file.absolutePath) }
+            if (idx == currentIndex) applyOnlineSub(file, hit)
+            toast("字幕已加载：${hit.provider}")
+        }
+    }
+
+    /** Attach a downloaded subtitle file to the current item and select it. */
+    private fun applyOnlineSub(file: File, hit: OnlineSubtitles.Hit?) {
+        val idx = currentIndex
+        val cur = queue.getOrNull(idx) ?: return
+        val label = "在线字幕" + (hit?.let { "·${it.provider} ${it.lang}" } ?: "")
+        val uri = android.net.Uri.fromFile(file).toString()
+        if (cur.subtitles.any { it.url == uri }) return
+        val sub = SubTrack(uri, label, SubTrack.mimeFor(file.extension), "zh")
+        pendingOnlineSubLabel = label
+        replaceCurrent(cur.copy(subtitles = cur.subtitles + sub), player.currentPosition.coerceAtLeast(0))
+    }
+
+    /** Re-attach the subtitle previously downloaded for this item, if any. */
+    private fun attachSavedSub() {
+        val idx = currentIndex
+        if (!savedSubAttached.add(idx)) return
+        val p = queue.getOrNull(idx) ?: return
+        val key = p.resumeKey ?: return
+        val path = Repo.store.savedSub(key) ?: return
+        val file = File(path)
+        if (!file.exists()) return
+        val uri = android.net.Uri.fromFile(file).toString()
+        if (p.subtitles.any { it.url == uri }) return
+        val label = "在线字幕"
+        val sub = SubTrack(uri, label, SubTrack.mimeFor(file.extension), "zh")
+        pendingOnlineSubLabel = label
+        lifecycleScope.launch {
+            if (idx == currentIndex && ::player.isInitialized) {
+                val cur = queue.getOrNull(idx) ?: return@launch
+                replaceCurrent(cur.copy(subtitles = cur.subtitles + sub), player.currentPosition.coerceAtLeast(0))
+            }
+        }
     }
 
     private fun showSpeedPicker(anchor: View) {
@@ -669,6 +758,23 @@ class PlayerActivity : ComponentActivity() {
                 val reason = if (videoBad) "视频格式不支持" else "音频格式不支持"
                 if (autoMpv && switchToMpv(reason, forced = false)) return
                 if (!tryTranscode(reason)) toast(if (videoBad) "该视频的画面格式本机无法解码" else "该视频的音频格式本机无法解码")
+            }
+            // Select the online subtitle that was just attached.
+            val want = pendingOnlineSubLabel
+            if (want != null) {
+                outer@ for (g in tracks.groups) {
+                    if (g.type != C.TRACK_TYPE_TEXT) continue
+                    for (i in 0 until g.length) {
+                        if (g.getTrackFormat(i).label == want) {
+                            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
+                                .build()
+                            pendingOnlineSubLabel = null
+                            break@outer
+                        }
+                    }
+                }
             }
         }
 
