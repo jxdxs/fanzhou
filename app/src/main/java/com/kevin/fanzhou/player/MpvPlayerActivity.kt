@@ -39,6 +39,7 @@ import androidx.media3.ui.DefaultTimeBar
 import androidx.media3.ui.TimeBar
 import com.kevin.fanzhou.R
 import com.kevin.fanzhou.cloud.CloudDrive
+import com.kevin.fanzhou.cloud.CloudFile
 import com.kevin.fanzhou.cloud.Resolved
 import com.kevin.fanzhou.data.PlayItem
 import com.kevin.fanzhou.subtitle.OnlineSubtitles
@@ -87,6 +88,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private val folderQualityApplied = HashSet<Int>()
     /** Queue indexes that already used the one-shot Jellyfin transcode fallback. */
     private val jfFallbackTried = HashSet<Int>()
+    /** Next cloud-ladder position to try per index after a load failure. */
+    private val cloudLadderStep = HashMap<Int, Int>()
+    private var cloudFallbackBusy = false
     /** "idx:path" of online subtitles already added to mpv. */
     private val addedOnlineSubs = HashSet<String>()
     private var coreForced = false
@@ -143,7 +147,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         coreForced = intent.getBooleanExtra(PlayerCore.EXTRA_FORCED, false)
         saveCurrent(stopped = true)
         originals.clear(); qualityLabel.clear()
-        qualityCache.clear(); folderQualityApplied.clear(); jfFallbackTried.clear()
+        qualityCache.clear(); folderQualityApplied.clear(); jfFallbackTried.clear(); cloudLadderStep.clear()
         queue = PlayQueue.items.toMutableList()
         if (queue.isEmpty()) { finish(); return }
         playIndex(PlayQueue.index.coerceIn(0, queue.size - 1))
@@ -368,7 +372,15 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val p = queue.getOrNull(idx) ?: return
         val orig = originals[idx] ?: p
         val sid = orig.sourceId
-        // Last resort: server (Jellyfin/Emby) transcoding, still inside MPV (once per item).
+        // Cloud file: automatically step down the drive's transcode ladder.
+        val cf = orig.cloudFile
+        if (cf != null && sid != null) { cloudFallbackOrElse(idx, orig, cf, sid); return }
+        jfFallbackOrToast(idx, orig)
+    }
+
+    /** Last resorts after the cloud ladder: Jellyfin server transcode (once), else a toast. */
+    private fun jfFallbackOrToast(idx: Int, orig: PlayItem) {
+        val sid = orig.sourceId
         val jfId = orig.jfItemId
         if (jfId != null && sid != null && jfFallbackTried.add(idx)) {
             val client = Repo.jellyfin(sid)
@@ -380,6 +392,33 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
         toast("MPV 无法播放此文件")
         showControls()
+    }
+
+    /**
+     * The current cloud rendition failed: continue at the next lower rendition
+     * from the drive's transcode ladder, keeping the position. When the ladder
+     * is empty or exhausted, fall back to [jfFallbackOrToast].
+     */
+    private fun cloudFallbackOrElse(idx: Int, orig: PlayItem, cf: CloudFile, sid: String) {
+        if (cloudFallbackBusy) return
+        cloudFallbackBusy = true
+        lifecycleScope.launch {
+            try {
+                val qs = qualityCache[idx] ?: runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                    .also { if (it.isNotEmpty()) qualityCache[idx] = it }
+                if (idx != currentIndex) return@launch
+                if (qs.isEmpty()) { jfFallbackOrToast(idx, orig); return@launch }
+                val curLabel = qualityLabel[idx] ?: "原画"
+                val curPos = if (curLabel == "原画") -1 else qs.indexOfFirst { it.first == curLabel }
+                val next = cloudLadderStep[idx] ?: (curPos + 1)
+                if (next !in qs.indices) { jfFallbackOrToast(idx, orig); return@launch }
+                cloudLadderStep[idx] = next + 1
+                val (label, r) = qs[next]
+                val subs = queue.getOrNull(idx)?.subtitles ?: orig.subtitles
+                replaceCurrent(orig.copy(url = r.url, headers = r.headers, mime = r.mime, cloudFile = cf, subtitles = subs), label)
+                showHint("原播放失败，已自动切换：$label")
+            } finally { cloudFallbackBusy = false }
+        }
     }
 
     /** Bottom-bar 选集 button: jump within the current queue; popup anchored at the button. */
@@ -829,7 +868,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     hintView.visibility = View.GONE
                     if (idx != currentIndex) return@launch
                     val opts = listOf<Pair<String, () -> PlayItem>>("原画" to { orig }) + qs.map { (label, r) ->
-                        label to { orig.copy(url = r.url, headers = r.headers, mime = r.mime, cloudFile = null) }
+                        label to { orig.copy(url = r.url, headers = r.headers, mime = r.mime, cloudFile = cf) }
                     }
                     if (opts.size == 1) toast("网盘暂时没有这个视频的转码版本，只有原画")
                     pickQuality(idx, opts)
@@ -856,6 +895,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                         Repo.store.setQualityForFolder(key, if (label == "原画") null else label)
                     }
                 }
+                cloudLadderStep.remove(idx)
                 if (label == "原画") {
                     val o = originals.remove(idx) ?: return@setSingleChoiceItems
                     queue[idx] = o

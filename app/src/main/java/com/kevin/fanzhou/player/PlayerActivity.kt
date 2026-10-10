@@ -83,6 +83,9 @@ class PlayerActivity : ComponentActivity() {
     private val qualityCache = HashMap<Int, List<Pair<String, Resolved>>>()
     /** Queue indexes whose remembered per-folder quality has already been applied. */
     private val folderQualityApplied = HashSet<Int>()
+    /** Next cloud-ladder position to try per index after a playback failure. */
+    private val cloudLadderStep = HashMap<Int, Int>()
+    private var cloudFallbackBusy = false
     /** Label of an online subtitle to select once its track appears. */
     private var pendingOnlineSubLabel: String? = null
     /** Queue indexes whose cached online subtitle has already been attached. */
@@ -151,7 +154,7 @@ class PlayerActivity : ComponentActivity() {
         coreForced = intent.getBooleanExtra(PlayerCore.EXTRA_FORCED, false)
         switchedToMpv = false
         transcodedIds.clear(); originals.clear(); qualityLabel.clear()
-        qualityCache.clear(); folderQualityApplied.clear(); savedSubAttached.clear()
+        qualityCache.clear(); folderQualityApplied.clear(); savedSubAttached.clear(); cloudLadderStep.clear()
         reportStopCurrent()
         loadQueueFromIntent(intent)
         startQueue()
@@ -234,6 +237,8 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_audio)?.setOnClickListener { showAudioTrackMenu() }
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
         playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { showPlayerSettingsMenu() }
+        // The subtitle button opens our own menu (with 在线搜索字幕), not Media3's stock dialog.
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle)?.setOnClickListener { showTextTrackMenu() }
         updateSpeedLabel()
 
         hintView = TextView(this).apply {
@@ -785,9 +790,53 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onPlayerError(error: PlaybackException) {
             val p = queue.getOrNull(currentIndex)
-            // 自动: try MPV on the original file first; server/cloud transcoding stays the last resort.
-            if (autoMpv && p != null && originals[currentIndex] == null && switchToMpv("ExoPlayer 无法播放", forced = false)) return
-            if (!tryTranscode("直连播放失败")) toast("播放失败：${error.errorCodeName}")
+            // Cloud file: automatically step down the drive's transcode ladder.
+            if (p != null && (originals[currentIndex] ?: p).cloudFile != null) {
+                cloudFallbackOrElse(error)
+                return
+            }
+            errorFallback(error)
+        }
+    }
+
+    /** Non-cloud failure chain: switch core (auto mode) → Jellyfin transcode → toast. */
+    private fun errorFallback(error: PlaybackException) {
+        val p = queue.getOrNull(currentIndex)
+        if (autoMpv && p != null && originals[currentIndex] == null && switchToMpv("ExoPlayer 无法播放", forced = false)) return
+        if (!tryTranscode("直连播放失败")) toast("播放失败：${error.errorCodeName}")
+    }
+
+    /**
+     * The current cloud rendition failed (expired link, unsupported stream…):
+     * fetch the drive's transcode ladder and automatically continue at the next
+     * lower rendition, keeping the position. When the ladder is empty or
+     * exhausted, fall back to [errorFallback].
+     */
+    private fun cloudFallbackOrElse(error: PlaybackException) {
+        val idx = currentIndex
+        val orig = originals[idx] ?: queue.getOrNull(idx) ?: run { errorFallback(error); return }
+        val cf = orig.cloudFile ?: run { errorFallback(error); return }
+        val sid = orig.sourceId ?: run { errorFallback(error); return }
+        if (cloudFallbackBusy) return
+        cloudFallbackBusy = true
+        lifecycleScope.launch {
+            try {
+                val qs = qualityCache[idx] ?: runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                    .also { if (it.isNotEmpty()) qualityCache[idx] = it }
+                if (idx != currentIndex) return@launch
+                if (qs.isEmpty()) { errorFallback(error); return@launch }
+                val curLabel = qualityLabel[idx] ?: "原画"
+                val curPos = if (curLabel == "原画") -1 else qs.indexOfFirst { it.first == curLabel }
+                val next = cloudLadderStep[idx] ?: (curPos + 1)
+                if (next !in qs.indices) { errorFallback(error); return@launch }
+                cloudLadderStep[idx] = next + 1
+                val (label, r) = qs[next]
+                val pos = player.currentPosition.coerceAtLeast(0)
+                val subs = queue.getOrNull(idx)?.subtitles ?: orig.subtitles
+                qualityLabel[idx] = label
+                replaceCurrent(orig.copy(url = r.url, headers = r.headers, mime = r.mime, subtitles = subs, startMs = pos), pos)
+                showHint("原播放失败，已自动切换：$label")
+            } finally { cloudFallbackBusy = false }
         }
     }
 
@@ -880,6 +929,7 @@ class PlayerActivity : ComponentActivity() {
                 val pos = player.currentPosition
                 val item = make().copy(startMs = pos)
                 qualityLabel[idx] = label
+                cloudLadderStep.remove(idx)
                 // Remember the manual pick for this cloud folder; later episodes start at it.
                 (originals[idx] ?: queue.getOrNull(idx))?.let { o ->
                     val key = o.cloudFolderKey
