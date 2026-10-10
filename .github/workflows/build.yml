@@ -53,9 +53,21 @@ jobs:
           name: Fanzhou-apk
           path: ${{ env.APK_ASSET }}
           if-no-files-found: error
+      - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          awk -v tag="## ${GITHUB_REF_NAME}" '
+            $0 == tag { f = 1; next }
+            /^## / && f { exit }
+            f { print }
+          ' CHANGELOG.md | sed -e '1{/^$/d}' > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "Release notes for ${GITHUB_REF_NAME} (see CHANGELOG.md)" > release_notes.md
+          fi
+          cat release_notes.md
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.APK_ASSET }}
-          generate_release_notes: true
+          body_path: release_notes.md
