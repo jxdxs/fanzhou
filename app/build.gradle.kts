@@ -20,10 +20,19 @@ android {
     }
 
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("../release.jks")
+            storePassword = System.getenv("FANZHOU_KEYSTORE_PASSWORD") ?: ""
+            keyAlias = System.getenv("FANZHOU_KEY_ALIAS") ?: "fanzhou"
+            keyPassword = System.getenv("FANZHOU_KEY_PASSWORD") ?: ""
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
