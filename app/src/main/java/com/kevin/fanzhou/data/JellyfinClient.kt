@@ -145,6 +145,22 @@ class JellyfinClient(val source: Source) {
     /** 飞牛影视 refuses image requests without a token; Jellyfin/Emby serve them openly. */
     private fun img(u: String) = if (source.isFnos && token.isNotEmpty()) "$u&api_key=$token" else u
 
+    /**
+     * 飞牛影视 ignores the api_key query parameter on media/image endpoints
+     * (its JSON API works because those calls carry headers). Send the token
+     * as request headers for media requests: used directly for MPV, and via
+     * the Repo.http interceptor for Coil image loads and Exo streams.
+     */
+    fun authHeaders(): Map<String, String> {
+        if (!source.isFnos || token.isEmpty()) return emptyMap()
+        val h = authHeader()
+        return mapOf(
+            "X-Emby-Authorization" to h,
+            "Authorization" to h,
+            "X-Emby-Token" to token,
+        )
+    }
+
     fun primaryImage(item: JfItem, maxHeight: Int = 480): String? = primaryImage0(item, maxHeight)?.let(::img)
     fun seriesPoster(item: JfItem, maxHeight: Int = 480): String? = seriesPoster0(item, maxHeight)?.let(::img)
     fun backdrop(item: JfItem, maxWidth: Int = 1280): String? = backdrop0(item, maxWidth)?.let(::img)
@@ -211,6 +227,7 @@ class JellyfinClient(val source: Source) {
             url = streamUrl(item.id, msId),
             title = title,
             subtitle = sub,
+            headers = authHeaders(),
             startMs = if (start) (item.userData?.positionTicks ?: 0) / 10_000 else 0,
             sourceId = source.id,
             jfItemId = item.id,

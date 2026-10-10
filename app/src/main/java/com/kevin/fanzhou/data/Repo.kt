@@ -1,6 +1,7 @@
 package com.kevin.fanzhou.data
 
 import android.content.Context
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -30,7 +31,28 @@ object Repo {
             .sslSocketFactory(ssl.socketFactory, trustAll)
             .hostnameVerifier { _, _ -> true }
             .followRedirects(true)
+            // 飞牛影视 ignores api_key in the URL on media/image endpoints: attach the
+            // token as headers for requests to a 飞牛影视 source (covers Coil image
+            // loads and Exo streams; MPV gets headers via PlayItem.headers).
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val hdrs = fnosAuthHeaders(req.url.host, req.url.port)
+                if (hdrs.isEmpty()) chain.proceed(req)
+                else chain.proceed(req.newBuilder().apply { hdrs.forEach { (k, v) -> header(k, v) } }.build())
+            }
             .build()
+    }
+
+    /** Auth headers when [host]:[port] belongs to a 飞牛影视 source, else empty. */
+    private fun fnosAuthHeaders(host: String, port: Int): Map<String, String> {
+        if (!::store.isInitialized) return emptyMap()
+        val src = store.sources.value.firstOrNull { s ->
+            s.isFnos && !s.token.isNullOrEmpty() && runCatching {
+                val u = s.url.toHttpUrl()
+                u.host == host && u.port == port
+            }.getOrDefault(false)
+        } ?: return emptyMap()
+        return JellyfinClient(src).authHeaders()
     }
 
     private val jfClients = HashMap<String, JellyfinClient>()

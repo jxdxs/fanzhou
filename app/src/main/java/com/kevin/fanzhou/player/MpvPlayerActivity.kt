@@ -386,7 +386,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             val client = Repo.jellyfin(sid)
             if (client != null) {
                 toast("直连播放失败，已切换为服务器转码")
-                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId), headers = emptyMap()), "转码 8Mbps")
+                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId), headers = client.authHeaders()), "转码 8Mbps")
                 return
             }
         }
