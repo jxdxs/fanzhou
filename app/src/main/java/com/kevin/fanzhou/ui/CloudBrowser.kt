@@ -31,7 +31,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -266,9 +265,6 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
         favs = store.cloudFavs(sid)
         android.widget.Toast.makeText(context, "已取消收藏", android.widget.Toast.LENGTH_SHORT).show()
     }
-    fun playFav(fav: CloudFav) = playRecent(
-        CloudRecent(fav.id, fav.name, fav.extra, fav.size, fav.thumb, fav.duration, fav.dirId, fav.dirName, System.currentTimeMillis())
-    )
     fun addRecent(f: CloudFile) = store.addCloudRecent(
         sid, CloudRecent(f.id, f.name, f.extra, f.size, f.thumb, f.duration, dirId, title, System.currentTimeMillis())
     )
@@ -312,6 +308,9 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
             }
         }
     }
+    fun playFav(fav: CloudFav) = playRecent(
+        CloudRecent(fav.id, fav.name, fav.extra, fav.size, fav.thumb, fav.duration, fav.dirId, fav.dirName, System.currentTimeMillis())
+    )
     fun setView(v: String) { view = v; store.setCloudView(sid, v); viewMenu = false }
 
     Scaffold(topBar = {
@@ -486,7 +485,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
             }
             if (f.isDir || f.isVideo) {
                 val favved = store.isCloudFav(sid, f.id)
-                SheetRow(if (favved) Icons.Filled.Star else Icons.Filled.StarBorder, null, if (favved) "取消收藏" else "收藏") { sheetFile = null; toggleFav(f) }
+                SheetRow(Icons.Filled.Star, null, if (favved) "取消收藏" else "收藏") { sheetFile = null; toggleFav(f) }
             }
             SheetRow(null, R.drawable.ic_copy, "复制文件名") {
                 clipboard.setText(AnnotatedString(f.name)); sheetFile = null
