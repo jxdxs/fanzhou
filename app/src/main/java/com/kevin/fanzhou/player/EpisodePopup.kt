@@ -28,7 +28,7 @@ object EpisodePopup {
             background = GradientDrawable().apply { setColor(0xE6202020.toInt()); cornerRadius = 12 * dp }
             addView(col, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        val popup = PopupWindow(scroll, (320 * dp).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+        val popup = PopupWindow(scroll, (228 * dp).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             isOutsideTouchable = true
             elevation = 8 * dp
@@ -49,13 +49,13 @@ object EpisodePopup {
                 setOnClickListener { popup.dismiss(); onPick(i) }
             })
         }
-        scroll.measure(View.MeasureSpec.makeMeasureSpec((320 * dp).toInt(), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
+        scroll.measure(View.MeasureSpec.makeMeasureSpec((228 * dp).toInt(), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
         val loc = IntArray(2).also { anchor.getLocationInWindow(it) }
         val maxH = (loc[1] - 8 * dp).toInt().coerceAtLeast((160 * dp).toInt())
         val h = scroll.measuredHeight.coerceAtMost(maxH)
         popup.height = h
         val screenW = ctx.resources.displayMetrics.widthPixels
-        val w = (320 * dp).toInt()
+        val w = (228 * dp).toInt()
         val x = (loc[0] + anchor.width - w).coerceIn((8 * dp).toInt(), (screenW - w - 8 * dp).toInt().coerceAtLeast((8 * dp).toInt()))
         val y = (loc[1] - h - 4 * dp).toInt().coerceAtLeast(0)
         popup.showAtLocation(anchor, Gravity.NO_GRAVITY, x, y)
