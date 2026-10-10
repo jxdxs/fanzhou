@@ -691,8 +691,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 if (q.length < 2) { toast("关键词太短"); return@setPositiveButton }
                 showHint("正在搜索字幕…", sticky = true)
                 lifecycleScope.launch {
-                    val hits = runCatching { OnlineSubtitles.searchAll(q, p.title) }.getOrDefault(emptyList())
+                    val r = runCatching { OnlineSubtitles.searchAll(q, p.title) }
                     hintView.visibility = View.GONE
+                    if (r.isFailure) { toast("搜索失败：${r.exceptionOrNull()?.message ?: "网络错误"}"); return@launch }
+                    val hits = r.getOrDefault(emptyList())
                     if (hits.isEmpty()) { toast("没有搜到字幕，可以换个关键词再试"); return@launch }
                     val labels = hits.map { "【${it.provider}】${it.lang} · ${it.title}" }
                     AlertDialog.Builder(this@MpvPlayerActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -711,9 +713,12 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         lifecycleScope.launch {
             val file = runCatching {
                 OnlineSubtitles.fetch(hit, p.title, File(cacheDir, "subs"))
-            }.getOrNull()
+            }.getOrElse { e ->
+                hintView.visibility = View.GONE
+                toast("字幕下载失败：${e.message ?: "网络错误"}")
+                return@launch
+            }
             hintView.visibility = View.GONE
-            if (file == null) { toast("字幕下载失败"); return@launch }
             p.resumeKey?.let { Repo.store.saveSub(it, file.absolutePath) }
             if (idx == currentIndex) addOnlineSub(file)
             toast("字幕已加载：${hit.provider}")

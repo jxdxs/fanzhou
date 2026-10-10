@@ -3,8 +3,10 @@ package com.kevin.fanzhou.subtitle
 import com.kevin.fanzhou.cloud.CloudDrive
 import com.kevin.fanzhou.cloud.str
 import com.kevin.fanzhou.data.Repo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -82,12 +84,27 @@ raw.contains("韩") || raw.equals("ko", true) -> "韩语"
 else -> raw
 }
 
-suspend fun searchAll(query: String, fileName: String): List<Hit> = coroutineScope {
+/**
+ * Searches all configured providers off the main thread. If every configured
+ * provider failed (bad token, no network...), throws with the first error so
+ * the UI can say what actually went wrong instead of a bare "no results".
+ */
+suspend fun searchAll(query: String, fileName: String): List<Hit> = withContext(Dispatchers.IO) {
 val ep = episodeOf(fileName)
-val a = async { runCatching { searchAssrt(query)}.getOrDefault(emptyList())}
-val b = async { runCatching { searchOpenSubtitles(query)}.getOrDefault(emptyList())}
-val c = async { runCatching { searchSubDl(query, ep)}.getOrDefault(emptyList())}
-a.await() + b.await() + c.await()
+val errors = ArrayList<String>()
+fun runProvider(name: String, block: () -> List<Hit>): List<Hit> =
+try { block() } catch (e: Exception) {
+if (name.isNotEmpty()) errors.add("$name：${e.message ?: "请求失败"}")
+emptyList()
+}
+coroutineScope {
+val a = async { runProvider(if (Repo.store.assrtToken.isBlank()) "" else "射手网") { searchAssrt(query) } }
+val b = async { runProvider(if (Repo.store.osApiKey.isBlank()) "" else "OpenSubtitles") { searchOpenSubtitles(query) } }
+val c = async { runProvider(if (Repo.store.subdlKey.isBlank()) "" else "SubDL") { searchSubDl(query, ep) } }
+val hits = a.await() + b.await() + c.await()
+if (hits.isEmpty() && errors.isNotEmpty()) throw IllegalStateException(errors.first())
+hits
+}
 }
 
 // ---------------- assrt (射手网) ----------------
@@ -97,7 +114,9 @@ val token = Repo.store.assrtToken
 if (token.isBlank()) return emptyList()
 val url = "https://api.assrt.net/v1/sub/search?token=${enc(token)}&q=${enc(query)}&cnt=15&no_muxer=1"
 val root = json.parseToJsonElement(httpGet(url)) as? JsonObject?: return emptyList()
-if ((root["status"] as? JsonPrimitive)?.contentOrNull!= "0") return emptyList()
+if ((root["status"] as? JsonPrimitive)?.contentOrNull!= "0") {
+throw IllegalStateException(root.str("errmsg") ?: "接口返回错误（令牌可能不对）")
+}
 val subs = root["subs"] as? JsonArray?: return emptyList()
 return subs.mapNotNull { e ->
 val o = e as? JsonObject?: return@mapNotNull null
@@ -150,7 +169,7 @@ Hit("SubDL", title, langName(o.str("lang")), dl)
 // ---------------- download ----------------
 
 /** Downloads the picked hit into [dir]; returns a UTF-8 subtitle file ready to load. */
-fun fetch(hit: Hit, fileTitle: String, dir: File): File {
+suspend fun fetch(hit: Hit, fileTitle: String, dir: File): File = withContext(Dispatchers.IO) {
 dir.mkdirs()
 val bytes = when (hit.provider) {
 "射手" -> fetchAssrt(hit.ref, fileTitle)
