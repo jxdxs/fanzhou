@@ -149,6 +149,16 @@
                     android:contentDescription="音轨"
                     android:src="@drawable/ic_audio" />
 
+                <!-- 选集 button: landscape only, only when the queue has more than one video (code toggles with mpv_audio). -->
+                <ImageButton
+                    android:id="@+id/mpv_episodes"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:padding="12dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="选集"
+                    android:src="@drawable/ic_episodes" />
+
                 <ImageButton
                     android:id="@+id/mpv_subtitle"
                     style="@style/ExoStyledControls.Button.Bottom.CC"

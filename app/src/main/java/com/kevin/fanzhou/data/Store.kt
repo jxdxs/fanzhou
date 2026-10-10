@@ -67,6 +67,11 @@ class Store(context: Context) {
         get() = prefs.getBoolean("auto_next", true)
         set(v) { prefs.edit().putBoolean("auto_next", v).apply() }
 
+    /** Cloud drives: when the original quality fails (or stalls), step down the transcoded ladder automatically. */
+    var autoQualityFallback: Boolean
+        get() = prefs.getBoolean("auto_quality_fallback", true)
+        set(v) { prefs.edit().putBoolean("auto_quality_fallback", v).apply() }
+
     var gridColumnsMin: Int
         get() = prefs.getInt("grid_min", 110)
         set(v) { prefs.edit().putInt("grid_min", v).apply() }

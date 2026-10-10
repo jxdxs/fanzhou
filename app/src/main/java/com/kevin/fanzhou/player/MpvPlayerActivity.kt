@@ -77,7 +77,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private var currentIndex = -1
     private val originals = HashMap<Int, PlayItem>()
     private val qualityLabel = HashMap<Int, String>()
-    private val fallbackTried = HashSet<Int>()
+    /** Cloud quality ladder (best first) per queue index, for automatic step-down on failure. */
+    private val qualityLadder = HashMap<Int, List<Pair<String, CloudDrive.Resolved>>>()
+    /** Next ladder step to try per queue index (0 = best transcoded rendition). */
+    private val qualityStep = HashMap<Int, Int>()
+    private val ladderBusy = HashSet<Int>()
     private var coreForced = false
     private var switching = false
 
@@ -131,7 +135,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         setIntent(intent)
         coreForced = intent.getBooleanExtra(PlayerCore.EXTRA_FORCED, false)
         saveCurrent(stopped = true)
-        originals.clear(); qualityLabel.clear(); fallbackTried.clear()
+        originals.clear(); qualityLabel.clear()
+        qualityLadder.clear(); qualityStep.clear(); ladderBusy.clear()
         queue = PlayQueue.items.toMutableList()
         if (queue.isEmpty()) { finish(); return }
         playIndex(PlayQueue.index.coerceIn(0, queue.size - 1))
@@ -242,6 +247,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private fun playIndex(i: Int) {
         if (i !in queue.indices) return
+        updateSpeedLabel()
         if (currentIndex >= 0 && currentIndex != i) saveCurrent(stopped = true)
         currentIndex = i
         PlayQueue.index = i
@@ -334,31 +340,96 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val idx = currentIndex
         val p = queue.getOrNull(idx) ?: return
         val orig = originals[idx] ?: p
-        if (fallbackTried.add(idx)) {
-            // Last resort: server (Jellyfin/Emby) or cloud transcoding, still inside MPV.
-            val jfId = orig.jfItemId
-            val sid = orig.sourceId
-            if (jfId != null && sid != null) {
-                val client = Repo.jellyfin(sid)
-                if (client != null) {
-                    toast("直连播放失败，已切换为服务器转码")
-                    replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId), headers = emptyMap()), "转码 8Mbps")
-                    return
-                }
-            }
-            val cf = orig.cloudFile
-            if (cf != null && sid != null) {
-                lifecycleScope.launch {
-                    val r = runCatching { CloudDrive.get(sid)?.resolveTranscode(cf) }.getOrNull()
-                    if (r == null || idx != currentIndex) { toast("播放失败，且网盘没有可用的转码版本"); return@launch }
-                    toast("直连播放失败，已切换为网盘转码")
-                    replaceCurrent(orig.copy(url = r.url, headers = r.headers, mime = r.mime, cloudFile = null, subtitles = orig.subtitles), "转码")
-                }
+        val cf = orig.cloudFile
+        val sid = orig.sourceId
+        if (cf != null && sid != null && Repo.store.autoQualityFallback) {
+            advanceCloudLadder(idx, orig, "直连播放失败")
+            return
+        }
+        // Last resort: server (Jellyfin/Emby) transcoding, still inside MPV (once per item).
+        val jfId = orig.jfItemId
+        if (jfId != null && sid != null && qualityStep[idx] == null) {
+            val client = Repo.jellyfin(sid)
+            if (client != null) {
+                qualityStep[idx] = 1
+                toast("直连播放失败，已切换为服务器转码")
+                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId), headers = emptyMap()), "转码 8Mbps")
                 return
             }
         }
         toast("MPV 无法播放此文件")
         showControls()
+    }
+
+    /** Step down the cloud transcoded-quality ladder (best first) until one loads. */
+    private fun advanceCloudLadder(idx: Int, orig: PlayItem, reason: String) {
+        if (!Repo.store.autoQualityFallback) return
+        val cf = orig.cloudFile ?: return
+        val sid = orig.sourceId ?: return
+        if (!ladderBusy.add(idx)) return
+        lifecycleScope.launch {
+            try {
+                val ladder = qualityLadder[idx] ?: run {
+                    val qs = runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                    val list = if (qs.isNotEmpty()) qs else
+                        runCatching { CloudDrive.get(sid)?.resolveTranscode(cf) }.getOrNull()
+                            ?.let { listOf("转码" to it) }.orEmpty()
+                    qualityLadder[idx] = list
+                    // If the user had manually picked a rendition, continue below it.
+                    val cur = qualityLabel[idx]
+                    qualityStep[idx] = if (cur == null) 0
+                        else (list.indexOfFirst { it.first == cur } + 1).coerceAtLeast(0)
+                    list
+                }
+                val step = qualityStep[idx] ?: 0
+                if (step >= ladder.size || idx != currentIndex) {
+                    if (step >= ladder.size) toast("$reason，且没有更低的画质可用了")
+                    showControls(); return@launch
+                }
+                val (label, r) = ladder[step]
+                qualityStep[idx] = step + 1
+                toast("$reason，已自动切换到 $label")
+                replaceCurrent(orig.copy(url = r.url, headers = r.headers, mime = r.mime, cloudFile = cf, subtitles = orig.subtitles), label)
+            } finally {
+                ladderBusy.remove(idx)
+            }
+        }
+    }
+
+    // ---------------- stall watchdog ----------------
+
+    private var stallLastPos = -1.0
+    private var stallSinceMs = 0L
+
+    /** Cloud playback that stays in buffering without progress for 25s counts as failed. */
+    private fun checkStall() {
+        val idx = currentIndex
+        val orig = queue.getOrNull(idx)?.let { originals[idx] ?: it } ?: return
+        if (orig.cloudFile == null || paused || !fileLoaded) { stallSinceMs = 0; return }
+        if (!buffering || posSec != stallLastPos) {
+            stallLastPos = posSec
+            stallSinceMs = System.currentTimeMillis()
+            return
+        }
+        if (stallSinceMs > 0 && System.currentTimeMillis() - stallSinceMs > 25_000) {
+            stallSinceMs = 0
+            advanceCloudLadder(idx, orig, "播放卡顿")
+        }
+    }
+
+    /** Bottom-bar 选集 button: jump within the current queue (e.g. a cloud folder's videos). */
+    private fun showEpisodeMenu() {
+        if (queue.size <= 1) { toast("当前只有一个视频"); return }
+        val labels = queue.mapIndexed { i, item ->
+            (if (i == currentIndex) "▶ " else "") + listOfNotNull(item.title, item.subtitle).joinToString(" · ")
+        }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("选集（${currentIndex + 1}/${queue.size}）")
+            .setItems(labels.toTypedArray()) { d, which ->
+                d.dismiss()
+                if (which != currentIndex) { playIndex(which); showHint("第 ${which + 1} 集") }
+            }
+            .show()
     }
 
     private fun replaceCurrent(item: PlayItem, label: String) {
@@ -410,6 +481,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private val uiTick = object : Runnable {
         override fun run() {
+            checkStall()
             if (!scrubbing) {
                 timeBar.setDuration(durMs.coerceAtLeast(0))
                 timeBar.setPosition(posMs.coerceAtLeast(0))
@@ -477,6 +549,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_ffwd).setOnClickListener { seekRelative(step); bumpControls() }
         playPause.setOnClickListener { togglePause(); bumpControls() }
         findViewById<View>(R.id.mpv_audio).setOnClickListener { showTrackMenu("audio"); bumpControls() }
+        findViewById<View>(R.id.mpv_episodes).setOnClickListener { showEpisodeMenu(); bumpControls() }
         findViewById<View>(R.id.mpv_subtitle).setOnClickListener { showTrackMenu("sub"); bumpControls() }
         findViewById<View>(R.id.mpv_settings).setOnClickListener { showSettingsMenu(); bumpControls() }
         findViewById<View>(R.id.mpv_speed)?.setOnClickListener { showSpeedPopup(it); bumpControls() }
@@ -533,10 +606,12 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         updateSpeedLabel()
     }
 
-    /** Bottom-bar 倍速 label + 音轨 button: landscape only (portrait has no spare width). */
+    /** Bottom-bar 倍速 label + 音轨/选集 buttons: landscape only (portrait has no spare width). */
     private fun updateSpeedLabel() {
         val portrait = PlayerOrientation.isPortrait(this)
         findViewById<View>(R.id.mpv_audio)?.visibility = if (portrait) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.mpv_episodes)?.visibility =
+            if (portrait || queue.size <= 1) View.GONE else View.VISIBLE
         val t = findViewById<TextView>(R.id.mpv_speed) ?: return
         t.visibility = if (portrait) View.GONE else View.VISIBLE
         t.text = fmtSpeed(speed) + "x"
@@ -717,6 +792,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 d.dismiss()
                 val (label, make) = opts[which]
                 if (label == cur || idx != currentIndex) return@setSingleChoiceItems
+                qualityLadder[idx]?.let { l -> qualityStep[idx] = (l.indexOfFirst { it.first == label } + 1).coerceAtLeast(0) }
+                    ?: qualityStep.remove(idx)
+                if (label == "原画") qualityStep[idx] = 0
                 if (label == "原画") {
                     val o = originals.remove(idx) ?: return@setSingleChoiceItems
                     queue[idx] = o

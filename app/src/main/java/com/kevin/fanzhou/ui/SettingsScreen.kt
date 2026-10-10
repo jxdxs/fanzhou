@@ -27,6 +27,7 @@ fun SettingsScreen() {
     var speed by remember { mutableFloatStateOf(store.defaultSpeed) }
     var step by remember { mutableIntStateOf(store.seekStepSec) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
+    var autoQf by remember { mutableStateOf(store.autoQualityFallback) }
     var gridMin by remember { mutableIntStateOf(store.gridColumnsMin) }
     var core by remember { mutableStateOf(store.playerCore) }
     var hwdec by remember { mutableStateOf(store.mpvHwdec) }
@@ -69,6 +70,13 @@ fun SettingsScreen() {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("自动播放下一集", modifier = Modifier.weight(1f))
                     Switch(autoNext, { autoNext = it; store.autoPlayNext = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("原画失败自动降低画质")
+                        Text("网盘原画播不了或长时间卡住时，逐档切换到更低的转码画质", fontSize = 12.sp, color = TextDim)
+                    }
+                    Switch(autoQf, { autoQf = it; store.autoQualityFallback = it })
                 }
             }
             Group("海报墙", "海报 ${gridMin}dp") {
