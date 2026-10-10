@@ -593,7 +593,7 @@ class PlayerActivity : ComponentActivity() {
     private fun showPlayerSettingsMenu(anchor: View) {
         if (!::player.isInitialized) return
         val items = ArrayList<IconMenu.Item>()
-        items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTextTrackMenu() }
+        items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTextTrackMenu(anchor) }
         if (currentIndex > 0) {
             items += IconMenu.Item(R.drawable.ic_prev, "上一集") {
                 player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play()

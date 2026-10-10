@@ -25,6 +25,14 @@ object TextMenu {
         val dm = ctx.resources.displayMetrics
         fun dp(v: Int) = (v * dm.density).toInt()
 
+        // 先声明 popup：下面的点击监听 lambda 要引用它，Kotlin 不允许 lambda 引用后声明的 val。
+        val popup = PopupWindow(ctx).apply {
+            width = ViewGroup.LayoutParams.WRAP_CONTENT
+            height = ViewGroup.LayoutParams.WRAP_CONTENT
+            isOutsideTouchable = true
+            isFocusable = true
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
         val list = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(4), 0, dp(4))
@@ -54,14 +62,7 @@ object TextMenu {
             setBackgroundResource(R.drawable.menu_panel_bg)
             addView(scroll)
         }
-        val popup = PopupWindow(ctx).apply {
-            contentView = panel
-            width = ViewGroup.LayoutParams.WRAP_CONTENT
-            height = ViewGroup.LayoutParams.WRAP_CONTENT
-            isOutsideTouchable = true
-            isFocusable = true
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        }
+        popup.contentView = panel
         panel.measure(
             View.MeasureSpec.makeMeasureSpec(dp(280), View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(dp(maxHeightDp), View.MeasureSpec.AT_MOST),
