@@ -33,6 +33,7 @@ fun SettingsScreen() {
     val subScope = rememberCoroutineScope()
     var speed by remember { mutableFloatStateOf(store.defaultSpeed) }
     var step by remember { mutableIntStateOf(store.seekStepSec) }
+    var introSkip by remember { mutableIntStateOf(store.introSkipSec) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
     var gridMin by remember { mutableIntStateOf(store.gridColumnsMin) }
     var core by remember { mutableStateOf(store.playerCore) }
@@ -68,11 +69,13 @@ fun SettingsScreen() {
                     Switch(hwdec, { hwdec = it; store.mpvHwdec = it })
                 }
             }
-            Group("播放", "${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒" + if (autoNext) " · 自动下一集" else "") {
+            Group("播放", "${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒 · 片头 ${introSkip} 秒" + if (autoNext) " · 自动下一集" else "") {
                 Text("默认倍速：${"%.2f".format(speed).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(speed, { speed = (Math.round(it * 4) / 4f); store.defaultSpeed = speed }, valueRange = 0.5f..3f, steps = 9)
                 Text("双击快进/快退：${step} 秒", fontSize = 14.sp)
                 Slider(step.toFloat(), { step = it.toInt(); store.seekStepSec = step }, valueRange = 5f..60f, steps = 10)
+                Text("跳过片头：${introSkip} 秒", fontSize = 14.sp)
+                Slider(introSkip.toFloat(), { introSkip = it.toInt(); store.introSkipSec = introSkip }, valueRange = 10f..180f, steps = 33)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("自动播放下一集", modifier = Modifier.weight(1f))
                     Switch(autoNext, { autoNext = it; store.autoPlayNext = it })

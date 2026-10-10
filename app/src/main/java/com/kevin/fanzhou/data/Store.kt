@@ -88,6 +88,11 @@ class Store(context: Context) {
         get() = prefs.getBoolean("mpv_hwdec", true)
         set(v) { prefs.edit().putBoolean("mpv_hwdec", v).apply() }
 
+    /** 跳过片头：一键跳到该秒数（默认 90 秒）。 */
+    var introSkipSec: Int
+        get() = prefs.getInt("intro_skip_sec", 90)
+        set(v) { prefs.edit().putInt("intro_skip_sec", v).apply() }
+
     var folderSort: String
         get() = prefs.getString("folder_sort", "name") ?: "name"
         set(v) { prefs.edit().putString("folder_sort", v).apply() }

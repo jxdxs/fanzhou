@@ -787,6 +787,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTrackMenu("sub") }
             if (currentIndex > 0) items += IconMenu.Item(R.drawable.ic_prev, "上一集") { playIndex(currentIndex - 1) }
             if (currentIndex + 1 < queue.size) items += IconMenu.Item(R.drawable.ic_next, "下一集") { playIndex(currentIndex + 1) }
+            items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { skipIntro() }
+            items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { skipOutro() }
             items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
             IconMenu.show(anchor, items)
             return
@@ -800,8 +802,30 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             mpv?.setPropertyString("hwdec", if (Repo.store.mpvHwdec) "mediacodec-copy" else "no")
             showHint(if (Repo.store.mpvHwdec) "硬件解码" else "软件解码")
         }
+        items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { skipIntro() }
+        items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { skipOutro() }
         items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
         IconMenu.show(anchor, items)
+    }
+
+    /** 跳过片头：跳到设置里的片头秒数；已过片头则提示。 */
+    private fun skipIntro() {
+        val target = Repo.store.introSkipSec * 1000L
+        if (posSec * 1000 < target - 2000) {
+            seekTo(target)
+            showHint("已跳过片头")
+        } else toast("已过片头")
+    }
+
+    /** 跳过片尾：有下一集则直接下一集，否则跳到结尾。 */
+    private fun skipOutro() {
+        if (currentIndex + 1 < queue.size) playIndex(currentIndex + 1)
+        else {
+            val durMs = (durSec * 1000).toLong()
+            if (durMs <= 0) { toast("无法跳过片尾"); return }
+            seekTo(maxOf(0, durMs - 5000))
+            showHint("已跳过片尾")
+        }
     }
 
     /** 防误触：藏起控制条，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */
