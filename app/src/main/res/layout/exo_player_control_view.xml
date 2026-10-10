@@ -110,9 +110,6 @@
       <ImageButton android:id="@id/exo_settings"
           style="@style/ExoStyledControls.Button.Bottom.Settings"/>
 
-      <ImageButton android:id="@id/exo_fullscreen"
-          style="@style/ExoStyledControls.Button.Bottom.FullScreen"/>
-
     </LinearLayout>
 
   </FrameLayout>

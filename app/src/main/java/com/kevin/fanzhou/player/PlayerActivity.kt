@@ -236,7 +236,7 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<TextView>(R.id.fz_speed)?.setOnClickListener { showSpeedPicker(it) }
         playerView.findViewById<View>(R.id.fz_audio)?.setOnClickListener { showAudioTrackMenu() }
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { showPlayerSettingsMenu() }
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { v -> showPlayerSettingsMenu(v) }
         // The subtitle button opens our own menu (with 在线搜索字幕), not Media3's stock dialog.
         playerView.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle)?.setOnClickListener { showTextTrackMenu() }
         updateSpeedLabel()
@@ -506,8 +506,6 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_audio)?.visibility = View.VISIBLE
         playerView.findViewById<View>(R.id.fz_episodes)?.visibility =
             if (queue.size <= 1) View.GONE else View.VISIBLE
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_fullscreen)?.visibility =
-            if (portrait) View.GONE else View.VISIBLE
         val t = playerView.findViewById<TextView>(R.id.fz_speed) ?: return
         t.visibility = View.VISIBLE
         if (::player.isInitialized) t.text = fmtSpeed(player.playbackParameters.speed)
@@ -590,19 +588,31 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** Gear menu: hosts the buttons folded out of the portrait bottom bar, plus the usual options. */
-    private fun showPlayerSettingsMenu() {
+    /** Settings (gear) menu: compact icon-button strip anchored above the button. */
+    private fun showPlayerSettingsMenu(anchor: View) {
         if (!::player.isInitialized) return
-        val items = ArrayList<String>()
-        val acts = ArrayList<() -> Unit>()
-        items += "字幕"; acts += { showTextTrackMenu() }
-        if (currentIndex > 0) { items += "上一集"; acts += { player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play() } }
-        if (currentIndex + 1 < queue.size) { items += "下一集"; acts += { player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play() } }
+        val items = ArrayList<IconMenu.Item>()
+        items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTextTrackMenu() }
+        if (currentIndex > 0) {
+            items += IconMenu.Item(R.drawable.ic_prev, "上一集") {
+                player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play()
+            }
+        }
+        if (currentIndex + 1 < queue.size) {
+            items += IconMenu.Item(R.drawable.ic_next, "下一集") {
+                player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play()
+            }
+        }
         if (!PlayerOrientation.isPortrait(this)) {
-            items += "随机播放（${if (player.shuffleModeEnabled) "开" else "关"}）"
-            acts += { player.shuffleModeEnabled = !player.shuffleModeEnabled }
-            val rm = when (player.repeatMode) { Player.REPEAT_MODE_ONE -> "单曲循环"; Player.REPEAT_MODE_ALL -> "循环全部"; else -> "关闭" }
-            items += "循环模式（$rm）"
-            acts += {
+            items += IconMenu.Item(R.drawable.ic_shuffle, "随机", active = player.shuffleModeEnabled) {
+                player.shuffleModeEnabled = !player.shuffleModeEnabled
+            }
+            val rmLabel = when (player.repeatMode) {
+                Player.REPEAT_MODE_ONE -> "单曲循环"
+                Player.REPEAT_MODE_ALL -> "循环全部"
+                else -> "循环"
+            }
+            items += IconMenu.Item(R.drawable.ic_repeat, rmLabel, active = player.repeatMode != Player.REPEAT_MODE_OFF) {
                 player.repeatMode = when (player.repeatMode) {
                     Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ONE
                     Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_ALL
@@ -610,10 +620,8 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        items += "防误触"; acts += { lockScreen() }
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setItems(items.toTypedArray()) { _, w -> acts[w]() }
-            .show()
+        items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
+        IconMenu.show(anchor, items)
     }
 
     /** 防误触：藏起控制条与顶栏，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */

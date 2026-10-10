@@ -548,7 +548,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_audio).setOnClickListener { showTrackMenu("audio"); bumpControls() }
         findViewById<View>(R.id.mpv_episodes).setOnClickListener { v -> showEpisodeMenu(v); bumpControls() }
         findViewById<View>(R.id.mpv_subtitle).setOnClickListener { showTrackMenu("sub"); bumpControls() }
-        findViewById<View>(R.id.mpv_settings).setOnClickListener { showSettingsMenu(); bumpControls() }
+        findViewById<View>(R.id.mpv_settings).setOnClickListener { v -> showSettingsMenu(v); bumpControls() }
         findViewById<View>(R.id.mpv_speed)?.setOnClickListener { showSpeedPopup(it); bumpControls() }
         updateSpeedLabel()
         timeBar.addListener(object : TimeBar.OnScrubListener {
@@ -778,34 +778,30 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (file.exists()) addOnlineSub(file)
     }
 
-    private fun showSettingsMenu() {
+    /** Settings (gear) menu: compact icon-button strip anchored above the button. */
+    private fun showSettingsMenu(anchor: View) {
         val portrait = PlayerOrientation.isPortrait(this)
-        val items = ArrayList<String>()
-        val acts = ArrayList<() -> Unit>()
         if (portrait) {
-            // Portrait gear holds exactly the folded buttons: 字幕 / 上一集 / 下一集.
-            items += "字幕"; acts += { showTrackMenu("sub") }
-            if (currentIndex > 0) { items += "上一集"; acts += { playIndex(currentIndex - 1) } }
-            if (currentIndex + 1 < queue.size) { items += "下一集"; acts += { playIndex(currentIndex + 1) } }
-            items += "防误触"; acts += { lockScreen() }
-            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setItems(items.toTypedArray()) { _, which -> acts[which]() }
-                .show()
+            // Portrait gear holds exactly the folded buttons: 字幕 / 上一集 / 下一集 / 防误触.
+            val items = ArrayList<IconMenu.Item>()
+            items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTrackMenu("sub") }
+            if (currentIndex > 0) items += IconMenu.Item(R.drawable.ic_prev, "上一集") { playIndex(currentIndex - 1) }
+            if (currentIndex + 1 < queue.size) items += IconMenu.Item(R.drawable.ic_next, "下一集") { playIndex(currentIndex + 1) }
+            items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
+            IconMenu.show(anchor, items)
             return
         }
-        items += "音轨"; acts += { showTrackMenu("audio") }
-        items += "倍速（当前 ${fmtSpeed(speed)}×）"; acts += { showSpeedMenu() }
-        items += "字幕延迟"; acts += { showSubDelayMenu() }
-        items += if (Repo.store.mpvHwdec) "解码：硬解（点按切换为软解）" else "解码：软解（点按切换为硬解）"
-        acts += {
+        val items = ArrayList<IconMenu.Item>()
+        items += IconMenu.Item(R.drawable.ic_audio, "音轨") { showTrackMenu("audio") }
+        items += IconMenu.Item(R.drawable.ic_speed, "${fmtSpeed(speed)}×") { showSpeedMenu() }
+        items += IconMenu.Item(R.drawable.ic_sub_delay, "字幕延迟") { showSubDelayMenu() }
+        items += IconMenu.Item(R.drawable.ic_decoder, if (Repo.store.mpvHwdec) "硬解" else "软解") {
             Repo.store.mpvHwdec = !Repo.store.mpvHwdec
             mpv?.setPropertyString("hwdec", if (Repo.store.mpvHwdec) "mediacodec-copy" else "no")
             showHint(if (Repo.store.mpvHwdec) "硬件解码" else "软件解码")
         }
-        items += "防误触"; acts += { lockScreen() }
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setItems(items.toTypedArray()) { _, which -> acts[which]() }
-            .show()
+        items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
+        IconMenu.show(anchor, items)
     }
 
     /** 防误触：藏起控制条，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */

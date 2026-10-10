@@ -45,12 +45,17 @@ object ScreenLock {
                 marginEnd = margin
             }
             setOnClickListener {
-                AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                // 窄一点的确认框：260dp 宽，不占满屏
+                val dlg = AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                     .setTitle("退出锁定？")
                     .setMessage("确认退出防误触锁定吗？")
                     .setPositiveButton("退出锁定") { d, _ -> d.dismiss(); unlock(); onUnlock?.invoke() }
                     .setNegativeButton("取消", null)
                     .show()
+                dlg.window?.setLayout(
+                    (260 * activity.resources.displayMetrics.density).toInt(),
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
             }
         }
         touch.addView(icon)
