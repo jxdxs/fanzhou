@@ -586,8 +586,6 @@ class PlayerActivity : ComponentActivity() {
         items += "字幕"; acts += { showTextTrackMenu() }
         if (currentIndex > 0) { items += "上一集"; acts += { player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play() } }
         if (currentIndex + 1 < queue.size) { items += "下一集"; acts += { player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play() } }
-        items += "音轨"; acts += { showAudioTrackMenu() }
-        items += "倍速"; acts += { playerView.findViewById<View>(R.id.fz_speed)?.let { showSpeedPicker(it) } }
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setItems(items.toTypedArray()) { _, w -> acts[w]() }
             .show()

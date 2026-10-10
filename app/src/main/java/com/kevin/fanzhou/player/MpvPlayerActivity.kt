@@ -657,9 +657,14 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val items = ArrayList<String>()
         val acts = ArrayList<() -> Unit>()
         if (portrait) {
+            // Portrait gear holds exactly the folded buttons: 字幕 / 上一集 / 下一集.
             items += "字幕"; acts += { showTrackMenu("sub") }
             if (currentIndex > 0) { items += "上一集"; acts += { playIndex(currentIndex - 1) } }
             if (currentIndex + 1 < queue.size) { items += "下一集"; acts += { playIndex(currentIndex + 1) } }
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setItems(items.toTypedArray()) { _, which -> acts[which]() }
+                .show()
+            return
         }
         items += "音轨"; acts += { showTrackMenu("audio") }
         items += "倍速（当前 ${fmtSpeed(speed)}×）"; acts += { showSpeedMenu() }
