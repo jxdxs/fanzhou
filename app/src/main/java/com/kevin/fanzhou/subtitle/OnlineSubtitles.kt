@@ -44,6 +44,22 @@ private val json = CloudDrive.json
 fun anyConfigured(): Boolean =
 Repo.store.assrtToken.isNotBlank() || Repo.store.subdlKey.isNotBlank() || Repo.store.osApiKey.isNotBlank()
 
+/** Settings → 测试连接: one tiny search per configured provider, one line each. */
+suspend fun testAll(): List<String> = withContext(Dispatchers.IO) {
+val out = ArrayList<String>()
+if (Repo.store.assrtToken.isNotBlank()) out += try {
+searchAssrt("Avatar"); "射手网：可用"
+} catch (e: Exception) { "射手网：失败（${e.message ?: "请求异常"}）" }
+if (Repo.store.subdlKey.isNotBlank()) out += try {
+searchSubDl("Avatar", null); "SubDL：可用"
+} catch (e: Exception) { "SubDL：失败（${e.message ?: "请求异常"}）" }
+if (Repo.store.osApiKey.isNotBlank()) out += try {
+searchOpenSubtitles("Avatar"); "OpenSubtitles：可用"
+} catch (e: Exception) { "OpenSubtitles：失败（${e.message ?: "请求异常"}）" }
+if (out.isEmpty()) out += "还没有填任何令牌"
+out
+}
+
 /** File name → search keywords: drops release junk but keeps SxxExx. */
 fun cleanQuery(name: String): String {
 var q = name.substringBeforeLast('.')
@@ -157,6 +173,9 @@ if (key.isBlank()) return emptyList()
 var url = "https://api.subdl.com/api/v1/subtitles?api_key=${enc(key)}&film_name=${enc(query)}&languages=ZH,ZH_BG,EN"
 if (ep!= null) url += "&season_number=${ep.first}&episode_number=${ep.second}"
 val root = json.parseToJsonElement(httpGet(url)) as? JsonObject?: return emptyList()
+if ((root["status"] as? JsonPrimitive)?.contentOrNull == "false") {
+throw IllegalStateException(root.str("message") ?: root.str("error") ?: "API Key 无效")
+}
 val subs = root["subtitles"] as? JsonArray?: return emptyList()
 return subs.mapNotNull { e ->
 val o = e as? JsonObject?: return@mapNotNull null

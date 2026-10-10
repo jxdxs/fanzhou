@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -58,6 +60,7 @@ import com.kevin.fanzhou.R
 import com.kevin.fanzhou.Routes
 import com.kevin.fanzhou.cloud.CloudDrive
 import com.kevin.fanzhou.cloud.CloudFile
+import com.kevin.fanzhou.data.CloudFav
 import com.kevin.fanzhou.data.CloudRecent
 import com.kevin.fanzhou.data.PlayQueue
 import com.kevin.fanzhou.data.Repo
@@ -245,6 +248,27 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     val crumbs = listOf(drive.source.name) + path + listOfNotNull(if (isRoot) null else (title ?: ""))
     val depth = crumbs.size - 1
 
+    var favs by remember { mutableStateOf(store.cloudFavs(sid)) }
+    LaunchedEffect(resumeTick) { favs = store.cloudFavs(sid) }
+    fun toggleFav(f: CloudFile) {
+        val fav = CloudFav(
+            f.id, f.name, f.isDir, f.extra, f.size, f.thumb, f.duration,
+            dirId = if (f.isDir) null else dir, dirName = if (f.isDir) null else title,
+            path = if (f.isDir) (if (isRoot) emptyList() else path + (title ?: "")) else emptyList(),
+            at = System.currentTimeMillis(),
+        )
+        val now = store.toggleCloudFav(sid, fav)
+        favs = store.cloudFavs(sid)
+        android.widget.Toast.makeText(context, if (now) "已收藏" else "已取消收藏", android.widget.Toast.LENGTH_SHORT).show()
+    }
+    fun removeFav(fav: CloudFav) {
+        store.removeCloudFav(sid, fav.id)
+        favs = store.cloudFavs(sid)
+        android.widget.Toast.makeText(context, "已取消收藏", android.widget.Toast.LENGTH_SHORT).show()
+    }
+    fun playFav(fav: CloudFav) = playRecent(
+        CloudRecent(fav.id, fav.name, fav.extra, fav.size, fav.thumb, fav.duration, fav.dirId, fav.dirName, System.currentTimeMillis())
+    )
     fun addRecent(f: CloudFile) = store.addCloudRecent(
         sid, CloudRecent(f.id, f.name, f.extra, f.size, f.thumb, f.duration, dirId, title, System.currentTimeMillis())
     )
@@ -347,7 +371,13 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
         ) {
             val fill = Modifier.fillMaxSize()
             val header: (@Composable () -> Unit)? = if (isRoot) ({
-                RootHeader(drive, usage, recent, headers, onRecent = ::playRecent)
+                RootHeader(
+                    drive, usage, recent, headers, favs,
+                    onRecent = ::playRecent,
+                    onFavVideo = ::playFav,
+                    onFavDir = { fav -> nav.navigate(Routes.cloud(sid, fav.id, fav.name, fav.path)) },
+                    onFavRemove = ::removeFav,
+                )
             }) else null
             when {
                 error != null && entries == null || error != null && !refreshing && expired -> Column(
@@ -453,6 +483,10 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                 SheetRow(Icons.Filled.PlayArrow, null, if (pos > 0) "继续播放（${fmtMs(pos)}）" else "播放") { sheetFile = null; play(f) }
                 SheetRow(null, R.drawable.ic_core, "用 MPV 播放") { sheetFile = null; play(f, mpv = true) }
                 SheetRow(null, R.drawable.ic_replay, "从头播放") { sheetFile = null; play(f, fromStart = true) }
+            }
+            if (f.isDir || f.isVideo) {
+                val favved = store.isCloudFav(sid, f.id)
+                SheetRow(if (favved) Icons.Filled.Star else Icons.Filled.StarBorder, null, if (favved) "取消收藏" else "收藏") { sheetFile = null; toggleFav(f) }
             }
             SheetRow(null, R.drawable.ic_copy, "复制文件名") {
                 clipboard.setText(AnnotatedString(f.name)); sheetFile = null
@@ -610,10 +644,15 @@ private fun EmptyState(text: String, onShowAll: (() -> Unit)?) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RootHeader(
     drive: CloudDrive, usage: Pair<Long, Long>?, recent: List<CloudRecent>, headers: Map<String, String>,
+    favs: List<CloudFav>,
     onRecent: (CloudRecent) -> Unit,
+    onFavVideo: (CloudFav) -> Unit,
+    onFavDir: (CloudFav) -> Unit,
+    onFavRemove: (CloudFav) -> Unit,
 ) {
     val s = drive.source
     Column(Modifier.fillMaxWidth()) {
@@ -645,6 +684,54 @@ private fun RootHeader(
                     drawStopIndicator = {},
                 )
                 Text("已使用 ${(frac * 100).toInt()}%", fontSize = 11.sp, color = TextDim, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
+        val favDirs = favs.filter { it.isDir }
+        val favVids = favs.filter { !it.isDir }
+        if (favDirs.isNotEmpty()) {
+            Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Star, null, tint = Accent, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("收藏目录", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(favDirs, key = { it.id }) { fav ->
+                    Column(
+                        Modifier.width(150.dp).clip(RoundedCornerShape(10.dp))
+                            .combinedClickable(onClick = { onFavDir(fav) }, onLongClick = { onFavRemove(fav) }),
+                    ) {
+                        Box(
+                            Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(10.dp)).background(Surface1),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(painterResource(R.drawable.ic_folder), null, tint = FolderColor, modifier = Modifier.size(40.dp)) }
+                        Text(fav.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
+                        Text("长按取消收藏", maxLines = 1, fontSize = 11.sp, color = TextDim)
+                    }
+                }
+            }
+        }
+        if (favVids.isNotEmpty()) {
+            Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Star, null, tint = Accent, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("收藏视频", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(favVids, key = { it.id }) { fav ->
+                    val f = CloudFile(fav.id, fav.name, false, fav.size, fav.extra, thumb = fav.thumb, duration = fav.duration)
+                    val pos = Repo.store.position(posKey(s.id, fav.id))
+                    Column(
+                        Modifier.width(150.dp).clip(RoundedCornerShape(10.dp))
+                            .combinedClickable(onClick = { onFavVideo(fav) }, onLongClick = { onFavRemove(fav) }),
+                    ) {
+                        ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 26)
+                        Text(fav.name.substringBeforeLast('.'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
+                        Text(
+                            listOfNotNull(fav.dirName, if (pos > 0) "看到 ${fmtMs(pos)}" else null).joinToString(" · ").ifEmpty { "根目录" },
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = TextDim,
+                        )
+                    }
+                }
             }
         }
         if (recent.isNotEmpty()) {

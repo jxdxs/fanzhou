@@ -125,6 +125,30 @@ class Store(context: Context) {
         prefs.edit().putString("cloud_recent_$sid", json.encodeToString(list)).apply()
     }
 
+    /** Favorite cloud videos & folders for one source, newest first. */
+    fun cloudFavs(sid: String): List<CloudFav> = try {
+        json.decodeFromString(prefs.getString("cloud_favs_$sid", "[]") ?: "[]")
+    } catch (e: Exception) { emptyList() }
+
+    fun isCloudFav(sid: String, id: String): Boolean = cloudFavs(sid).any { it.id == id }
+
+    /** Returns true if the item is now a favorite, false if it was removed. */
+    fun toggleCloudFav(sid: String, fav: CloudFav): Boolean {
+        val cur = cloudFavs(sid)
+        return if (cur.any { it.id == fav.id }) {
+            prefs.edit().putString("cloud_favs_$sid", json.encodeToString(cur.filterNot { it.id == fav.id })).apply()
+            false
+        } else {
+            prefs.edit().putString("cloud_favs_$sid", json.encodeToString(listOf(fav) + cur)).apply()
+            true
+        }
+    }
+
+    fun removeCloudFav(sid: String, id: String) {
+        val cur = cloudFavs(sid)
+        prefs.edit().putString("cloud_favs_$sid", json.encodeToString(cur.filterNot { it.id == id })).apply()
+    }
+
     fun position(key: String): Long = posPrefs.getLong(key, 0)
     fun savePosition(key: String, ms: Long) { posPrefs.edit().putLong(key, ms).apply() }
 
@@ -147,6 +171,23 @@ class Store(context: Context) {
     fun tmdbPut(key: String, value: String) { tmdbPrefs.edit().putString(key, value).apply() }
     fun clearTmdbCache() { tmdbPrefs.edit().clear().apply() }
 }
+
+@kotlinx.serialization.Serializable
+data class CloudFav(
+    val id: String,
+    val name: String,
+    val isDir: Boolean,
+    val extra: String? = null,
+    val size: Long = 0,
+    val thumb: String? = null,
+    val duration: Long = 0,
+    /** Videos: containing folder. Folders: unused. */
+    val dirId: String? = null,
+    val dirName: String? = null,
+    /** Folders: crumb names of the parent folder, for direct navigation. */
+    val path: List<String> = emptyList(),
+    val at: Long = 0,
+)
 
 @kotlinx.serialization.Serializable
 data class CloudRecent(

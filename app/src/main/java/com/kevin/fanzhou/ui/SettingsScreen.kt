@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import com.kevin.fanzhou.data.Repo
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -27,6 +28,9 @@ fun SettingsScreen() {
     var assrtT by remember { mutableStateOf(store.assrtToken) }
     var subdlK by remember { mutableStateOf(store.subdlKey) }
     var osK by remember { mutableStateOf(store.osApiKey) }
+    var subTesting by remember { mutableStateOf(false) }
+    var subTest by remember { mutableStateOf("") }
+    val subScope = rememberCoroutineScope()
     var speed by remember { mutableFloatStateOf(store.defaultSpeed) }
     var step by remember { mutableIntStateOf(store.seekStepSec) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
@@ -95,7 +99,20 @@ fun SettingsScreen() {
                 Text("OpenSubtitles 不登录账号时，每天可下载 5 条；射手网和 SubDL 没有按天卡死的限制。下载的字幕会缓存在本机，下次播同一集自动带上。", fontSize = 12.sp, color = TextDim)
                 Row {
                     Button(onClick = { store.assrtToken = assrtT; store.subdlKey = subdlK; store.osApiKey = osK; Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show() }) { Text("保存") }
+                    Spacer(Modifier.width(10.dp))
+                    OutlinedButton(enabled = !subTesting, onClick = {
+                        // Test what is currently typed, even before 保存.
+                        store.assrtToken = assrtT; store.subdlKey = subdlK; store.osApiKey = osK
+                        subTesting = true; subTest = ""
+                        subScope.launch {
+                            val lines = runCatching { com.kevin.fanzhou.subtitle.OnlineSubtitles.testAll() }
+                                .getOrElse { listOf("测试失败：${it.message ?: "网络错误"}") }
+                            subTest = lines.joinToString("\n")
+                            subTesting = false
+                        }
+                    }) { Text(if (subTesting) "测试中…" else "测试连接") }
                 }
+                if (subTest.isNotEmpty()) Text(subTest, fontSize = 12.sp, color = TextDim, lineHeight = 18.sp)
             }
             BackupSettings { t, sum, c -> Group(t, sum, c) }
             Group("手势说明", "单击、双击、滑动、长按") {
