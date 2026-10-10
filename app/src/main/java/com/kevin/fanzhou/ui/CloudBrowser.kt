@@ -271,7 +271,20 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     fun playRecent(r: CloudRecent) {
         val f = CloudFile(r.id, r.name, false, r.size, r.extra, thumb = r.thumb, duration = r.duration)
         store.addCloudRecent(sid, r.copy(at = System.currentTimeMillis()))
-        PlayerCore.start(context, listOf(drive.playItem(f, emptyList())), 0)
+        val dir = r.dirId
+        if (dir == null) { PlayerCore.start(context, listOf(drive.playItem(f, emptyList())), 0); return }
+        // Rebuild the folder queue so 选集/自动连播 work from 最近播放 too,
+        // without the user having to drill back into nested folders.
+        opScope.launch {
+            val sibs = runCatching { drive.list(dir) }.getOrNull()
+            val vids = sibs?.filter { it.isVideo }.orEmpty()
+            val idx = vids.indexOfFirst { it.id == r.id }
+            if (sibs == null || idx < 0 || vids.size <= 1) {
+                PlayerCore.start(context, listOf(drive.playItem(f, emptyList())), 0)
+            } else {
+                PlayerCore.start(context, vids.map { drive.playItem(it, sibs) }, idx)
+            }
+        }
     }
     fun setView(v: String) { view = v; store.setCloudView(sid, v); viewMenu = false }
 

@@ -96,7 +96,7 @@ fun SettingsScreen() {
             Group("手势说明", "单击、双击、滑动、长按") {
                 Text("单击：显示/隐藏控制栏\n双击左/右侧：快退/快进\n双击中间：暂停/播放\n左右滑动：拖动进度\n左侧上下滑：亮度　右侧上下滑：音量\n长按：2 倍速快进，松手恢复", fontSize = 13.sp, color = TextDim, lineHeight = 20.sp)
             }
-            Text("泛舟 2.3.4", color = TextDim, fontSize = 12.sp)
+            Text("泛舟 " + (try { context.packageManager.getPackageInfo(context.packageName, 0).versionName } catch (e: Exception) { null } ?: ""), color = TextDim, fontSize = 12.sp)
         }
     }
 }

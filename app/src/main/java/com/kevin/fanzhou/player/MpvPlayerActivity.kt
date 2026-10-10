@@ -418,19 +418,13 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
     }
 
-    /** Bottom-bar 选集 button: jump within the current queue (e.g. a cloud folder's videos). */
-    private fun showEpisodeMenu() {
+    /** Bottom-bar 选集 button: jump within the current queue; popup anchored at the button. */
+    private fun showEpisodeMenu(anchor: View) {
         if (queue.size <= 1) { toast("当前只有一个视频"); return }
-        val labels = queue.mapIndexed { i, item ->
-            (if (i == currentIndex) "▶ " else "") + listOfNotNull(item.title, item.subtitle).joinToString(" · ")
+        val labels = queue.map { item -> listOfNotNull(item.title, item.subtitle).joinToString(" · ") }
+        EpisodePopup.show(anchor, labels, currentIndex) { which ->
+            if (which != currentIndex) { playIndex(which); showHint("第 ${which + 1} 集") }
         }
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("选集（${currentIndex + 1}/${queue.size}）")
-            .setItems(labels.toTypedArray()) { d, which ->
-                d.dismiss()
-                if (which != currentIndex) { playIndex(which); showHint("第 ${which + 1} 集") }
-            }
-            .show()
     }
 
     private fun replaceCurrent(item: PlayItem, label: String) {
@@ -550,7 +544,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_ffwd).setOnClickListener { seekRelative(step); bumpControls() }
         playPause.setOnClickListener { togglePause(); bumpControls() }
         findViewById<View>(R.id.mpv_audio).setOnClickListener { showTrackMenu("audio"); bumpControls() }
-        findViewById<View>(R.id.mpv_episodes).setOnClickListener { showEpisodeMenu(); bumpControls() }
+        findViewById<View>(R.id.mpv_episodes).setOnClickListener { v -> showEpisodeMenu(v); bumpControls() }
         findViewById<View>(R.id.mpv_subtitle).setOnClickListener { showTrackMenu("sub"); bumpControls() }
         findViewById<View>(R.id.mpv_settings).setOnClickListener { showSettingsMenu(); bumpControls() }
         findViewById<View>(R.id.mpv_speed)?.setOnClickListener { showSpeedPopup(it); bumpControls() }

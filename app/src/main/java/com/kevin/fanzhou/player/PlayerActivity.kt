@@ -224,7 +224,7 @@ class PlayerActivity : ComponentActivity() {
         extendSpeedMenu()
         playerView.findViewById<TextView>(R.id.fz_speed)?.setOnClickListener { showSpeedPicker(it) }
         playerView.findViewById<View>(R.id.fz_audio)?.setOnClickListener { showAudioTrackMenu() }
-        playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { showEpisodeMenu() }
+        playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
         updateSpeedLabel()
 
         hintView = TextView(this).apply {
@@ -489,23 +489,17 @@ class PlayerActivity : ComponentActivity() {
         if (::player.isInitialized) t.text = fmtSpeed(player.playbackParameters.speed)
     }
 
-    /** Bottom-bar 选集 button: jump within the current queue (e.g. a cloud folder's videos). */
-    private fun showEpisodeMenu() {
+    /** Bottom-bar 选集 button: jump within the current queue; popup anchored at the button. */
+    private fun showEpisodeMenu(anchor: View) {
         if (queue.size <= 1) { toast("当前只有一个视频"); return }
-        val labels = queue.mapIndexed { i, item ->
-            (if (i == currentIndex) "▶ " else "") + listOfNotNull(item.title, item.subtitle).joinToString(" · ")
-        }
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("选集（${currentIndex + 1}/${queue.size}）")
-            .setItems(labels.toTypedArray()) { d, which ->
-                d.dismiss()
-                if (which != currentIndex) {
-                    player.seekToDefaultPosition(which)
-                    player.play()
-                    showHint("第 ${which + 1} 集")
-                }
+        val labels = queue.map { item -> listOfNotNull(item.title, item.subtitle).joinToString(" · ") }
+        EpisodePopup.show(anchor, labels, currentIndex) { which ->
+            if (which != currentIndex) {
+                player.seekToDefaultPosition(which)
+                player.play()
+                showHint("第 ${which + 1} 集")
             }
-            .show()
+        }
     }
 
     // ---------------- stall watchdog ----------------
