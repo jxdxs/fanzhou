@@ -31,6 +31,7 @@ data class JfHome(
     val views: List<JfItem> = emptyList(),
     val resume: List<JfItem> = emptyList(),
     val nextUp: List<JfItem> = emptyList(),
+    val favorites: List<JfItem> = emptyList(),
     val latest: List<Pair<JfItem, List<JfItem>>> = emptyList(),
     val error: String? = null,
 )
@@ -41,12 +42,13 @@ suspend fun loadJfHome(source: Source): JfHome = try {
         val views = async { c.views() }
         val resume = async { runCatching { c.resume() }.getOrDefault(emptyList()) }
         val next = async { runCatching { c.nextUp() }.getOrDefault(emptyList()) }
+        val fav = async { runCatching { c.favorites() }.getOrDefault(emptyList()) }
         val v = views.await()
         val latest = v.filter { it.collectionType in setOf("movies", "tvshows", null, "homevideos", "mixed") }
             .take(6)
             .map { lib -> async { lib to runCatching { c.latest(lib.id) }.getOrDefault(emptyList()) } }
             .awaitAll().filter { it.second.isNotEmpty() }
-        JfHome(source, v, resume.await(), next.await(), latest)
+        JfHome(source, v, resume.await(), next.await(), fav.await(), latest)
     }
 } catch (e: Exception) {
     JfHome(source, error = "${source.name} 连接失败：${e.message}")
@@ -117,6 +119,19 @@ fun HomeScreen(nav: NavHostController) {
                                     imageUrl = c.thumb(it), modifier = m,
                                     onClick = { nav.navigate(Routes.detail(h.source.id, it.seriesId ?: it.id)) },
                                 )
+                            }
+                        }
+                    }
+                    if (h.favorites.isNotEmpty()) {
+                        item { SectionHeader(if (homes.size > 1) "${h.source.name} · 喜爱视频" else "喜爱视频") }
+                        item {
+                            PosterRow(h.favorites) { it, m ->
+                                PosterCard(
+                                    title = if (it.type == "Episode") it.seriesName ?: it.name else it.name,
+                                    subtitle = it.year?.toString(), imageUrl = c.seriesPoster(it), modifier = m,
+                                    played = it.userData?.played == true,
+                                    badge = it.userData?.unplayed?.takeIf { n -> n > 0 }?.toString(),
+                                ) { nav.navigate(Routes.detail(h.source.id, it.id)) }
                             }
                         }
                     }

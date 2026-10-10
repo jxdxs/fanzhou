@@ -82,6 +82,11 @@ class JellyfinClient(val source: Source) {
         get("/Shows/NextUp?UserId=$uid&Limit=20&Fields=$fields&EnableTotalRecordCount=false")
     ).items
 
+    /** Items the user marked with the heart (IsFavorite). */
+    suspend fun favorites(): List<JfItem> = json.decodeFromString<JfItems>(
+        get("/Users/$uid/Items?Filters=IsFavorite&Recursive=true&IncludeItemTypes=Movie,Series,Episode&Limit=60&SortBy=DateCreated&SortOrder=Descending&Fields=$fields&ImageTypeLimit=1&EnableTotalRecordCount=false")
+    ).items
+
     suspend fun latest(parentId: String): List<JfItem> = json.decodeFromString<List<JfItem>>(
         get("/Users/$uid/Items/Latest?ParentId=$parentId&Limit=24&Fields=$fields&GroupItems=true")
     )
