@@ -238,7 +238,7 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
         playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { v -> showPlayerSettingsMenu(v) }
         // The subtitle button opens our own menu (with 在线搜索字幕), not Media3's stock dialog.
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle)?.setOnClickListener { showTextTrackMenu() }
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle)?.setOnClickListener { v -> showTextTrackMenu(v) }
         updateSpeedLabel()
 
         hintView = TextView(this).apply {
@@ -449,6 +449,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun onItemStarted() {
         val p = queue.getOrNull(currentIndex) ?: return
+        PlayerCore.bumpCloudRecent(p)
         updateSpeedLabel()
         applyFolderQuality()
         attachSavedSub()
@@ -603,8 +604,8 @@ class PlayerActivity : ComponentActivity() {
                 player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play()
             }
         }
-        items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { skipIntro() }
-        items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { skipOutro() }
+        items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
+        items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
         if (!PlayerOrientation.isPortrait(this)) {
             items += IconMenu.Item(R.drawable.ic_shuffle, "随机", active = player.shuffleModeEnabled) {
                 player.shuffleModeEnabled = !player.shuffleModeEnabled
@@ -626,26 +627,38 @@ class PlayerActivity : ComponentActivity() {
         IconMenu.show(anchor, items)
     }
 
-    /** 跳过片头：跳到设置里的片头秒数；已过片头则提示。 */
-    private fun skipIntro() {
-        val target = Repo.store.introSkipSec * 1000L
-        if (player.currentPosition < target - 2000) {
-            player.seekTo(target)
-            showHint("已跳过片头")
-        } else toast("已过片头")
+    /** 跳过片头：弹窗里直接调秒数（即时保存），点跳过执行。 */
+    private fun showSkipIntroPopup(anchor: View) {
+        SkipPopup.show(
+            anchor, "跳过片头", Repo.store.introSkipSec, 10, 180,
+            onSecChanged = { Repo.store.introSkipSec = it },
+            onSkip = { sec ->
+                val target = sec * 1000L
+                if (player.currentPosition < target - 2000) {
+                    player.seekTo(target)
+                    showHint("已跳过片头")
+                } else toast("已过片头")
+            },
+        )
     }
 
-    /** 跳过片尾：有下一集则直接下一集，否则跳到结尾。 */
-    private fun skipOutro() {
-        if (currentIndex + 1 < queue.size) {
-            player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
-            player.play()
-        } else {
-            val dur = player.duration
-            if (dur == C.TIME_UNSET || dur <= 0) { toast("无法跳过片尾"); return }
-            player.seekTo(maxOf(0, dur - 5000))
-            showHint("已跳过片尾")
-        }
+    /** 跳过片尾：弹窗里直接调秒数（即时保存），从当前位置向前跳过该秒数。 */
+    private fun showSkipOutroPopup(anchor: View) {
+        SkipPopup.show(
+            anchor, "跳过片尾", Repo.store.outroSkipSec, 10, 300,
+            onSecChanged = { Repo.store.outroSkipSec = it },
+            onSkip = { sec ->
+                val dur = player.duration
+                if (dur == C.TIME_UNSET || dur <= 0) toast("无法跳过片尾")
+                else {
+                    val target = minOf(dur - 2000, player.currentPosition + sec * 1000L).coerceAtLeast(0)
+                    if (target > player.currentPosition) {
+                        player.seekTo(target)
+                        showHint("已跳过片尾")
+                    } else toast("已在结尾")
+                }
+            },
+        )
     }
 
     /** 防误触：藏起控制条与顶栏，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */
@@ -656,37 +669,32 @@ class PlayerActivity : ComponentActivity() {
         ScreenLock.lock(this) { playerView.controllerAutoShow = true }
     }
 
-    /** Subtitle menu: 在线搜索 + 关闭 + embedded/external tracks. */
-    private fun showTextTrackMenu() {
+    /** Subtitle menu: compact popup above the button (在线搜索 + 关闭 + embedded/external tracks). */
+    private fun showTextTrackMenu(anchor: View) {
         if (!::player.isInitialized) return
         val choices = ArrayList<Pair<Tracks.Group, Int>>()
         for (g in player.currentTracks.groups) {
             if (g.type != C.TRACK_TYPE_TEXT) continue
             for (i in 0 until g.length) choices.add(g to i)
         }
-        val items = ArrayList<String>()
-        val acts = ArrayList<() -> Unit>()
-        items += "在线搜索字幕…"; acts += { showOnlineSubSearch() }
-        items += "关闭字幕"
-        acts += {
+        val items = ArrayList<TextMenu.Item>()
+        items += TextMenu.Item("在线搜索字幕…") { showOnlineSubSearch() }
+        items += TextMenu.Item("关闭字幕") {
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
         }
         choices.forEach { (g, i) ->
             val f = g.getTrackFormat(i)
-            items += listOfNotNull(f.label?.takeIf { it.isNotEmpty() }, f.language?.let { audioLangName(it) })
+            val label = listOfNotNull(f.label?.takeIf { it.isNotEmpty() }, f.language?.let { audioLangName(it) })
                 .joinToString(" · ").ifEmpty { "字幕" }
-            acts += {
+            items += TextMenu.Item(label) {
                 player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                     .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
                     .build()
             }
         }
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("字幕")
-            .setItems(items.toTypedArray()) { _, w -> acts[w]() }
-            .show()
+        TextMenu.show(anchor, items)
     }
 
     /** Search the configured online subtitle providers, download a pick and attach it. */

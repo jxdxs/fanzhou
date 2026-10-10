@@ -93,6 +93,11 @@ class Store(context: Context) {
         get() = prefs.getInt("intro_skip_sec", 90)
         set(v) { prefs.edit().putInt("intro_skip_sec", v).apply() }
 
+    /** 跳过片尾：从当前位置向前跳过该秒数（默认 90 秒）。 */
+    var outroSkipSec: Int
+        get() = prefs.getInt("outro_skip_sec", 90)
+        set(v) { prefs.edit().putInt("outro_skip_sec", v).apply() }
+
     var folderSort: String
         get() = prefs.getString("folder_sort", "name") ?: "name"
         set(v) { prefs.edit().putString("folder_sort", v).apply() }

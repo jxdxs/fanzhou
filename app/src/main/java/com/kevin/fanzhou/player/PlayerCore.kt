@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import com.kevin.fanzhou.data.CORE_EXO
 import com.kevin.fanzhou.data.CORE_MPV
+import com.kevin.fanzhou.data.CloudRecent
 import com.kevin.fanzhou.data.PlayItem
 import com.kevin.fanzhou.data.PlayQueue
 import com.kevin.fanzhou.data.Repo
@@ -50,5 +51,21 @@ object PlayerCore {
             .putExtra(EXTRA_FORCED, forced)
         if (context !is Activity) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(i)
+    }
+
+    /**
+     * 播放切到新的网盘视频时（自动连播、选集、下一集…），把它顶到最近播放最前面。
+     * 保留已有条目的目录名等信息，只刷新时间。
+     */
+    fun bumpCloudRecent(p: PlayItem) {
+        val cf = p.cloudFile ?: return
+        val sid = p.sourceId ?: return
+        val old = Repo.store.cloudRecent(sid).firstOrNull { it.id == cf.id }
+        val dirId = p.cloudFolderKey?.substringAfter(':', "")?.takeIf { it.isNotEmpty() }
+        Repo.store.addCloudRecent(
+            sid,
+            (old ?: CloudRecent(cf.id, cf.name, cf.extra, cf.size, cf.thumb, cf.duration, dirId))
+                .copy(at = System.currentTimeMillis()),
+        )
     }
 }

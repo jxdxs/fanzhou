@@ -263,6 +263,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         currentIndex = i
         PlayQueue.index = i
         val p = queue[i]
+        PlayerCore.bumpCloudRecent(p)
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
         posSec = p.startMs / 1000.0
         durSec = 0.0
@@ -545,9 +546,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_rew).setOnClickListener { seekRelative(-step); bumpControls() }
         findViewById<View>(R.id.mpv_ffwd).setOnClickListener { seekRelative(step); bumpControls() }
         playPause.setOnClickListener { togglePause(); bumpControls() }
-        findViewById<View>(R.id.mpv_audio).setOnClickListener { showTrackMenu("audio"); bumpControls() }
+        findViewById<View>(R.id.mpv_audio).setOnClickListener { v -> showTrackMenu("audio", v); bumpControls() }
         findViewById<View>(R.id.mpv_episodes).setOnClickListener { v -> showEpisodeMenu(v); bumpControls() }
-        findViewById<View>(R.id.mpv_subtitle).setOnClickListener { showTrackMenu("sub"); bumpControls() }
+        findViewById<View>(R.id.mpv_subtitle).setOnClickListener { v -> showTrackMenu("sub", v); bumpControls() }
         findViewById<View>(R.id.mpv_settings).setOnClickListener { v -> showSettingsMenu(v); bumpControls() }
         findViewById<View>(R.id.mpv_speed)?.setOnClickListener { showSpeedPopup(it); bumpControls() }
         updateSpeedLabel()
@@ -680,22 +681,17 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         else -> l
     }
 
-    private fun showTrackMenu(type: String) {
+    private fun showTrackMenu(type: String, anchor: View) {
         val list = tracks(type)
         val isSub = type == "sub"
         if (isSub) {
-            val items = ArrayList<String>()
-            val acts = ArrayList<() -> Unit>()
-            items += "在线搜索字幕…"; acts += { showOnlineSubSearch() }
-            items += "关闭字幕"; acts += { mpv?.setPropertyString("sid", "no") }
+            val items = ArrayList<TextMenu.Item>()
+            items += TextMenu.Item("在线搜索字幕…") { showOnlineSubSearch() }
+            items += TextMenu.Item("关闭字幕") { mpv?.setPropertyString("sid", "no") }
             list.forEach { t ->
-                items += t.label
-                acts += { mpv?.setPropertyString("sid", t.id.toString()) }
+                items += TextMenu.Item(t.label) { mpv?.setPropertyString("sid", t.id.toString()) }
             }
-            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("字幕")
-                .setItems(items.toTypedArray()) { _, w -> acts[w]() }
-                .show()
+            TextMenu.show(anchor, items)
             return
         }
         if (list.isEmpty()) { toast("没有可选音轨"); return }
@@ -784,17 +780,17 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (portrait) {
             // Portrait gear holds exactly the folded buttons: 字幕 / 上一集 / 下一集 / 防误触.
             val items = ArrayList<IconMenu.Item>()
-            items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTrackMenu("sub") }
+            items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTrackMenu("sub", anchor) }
             if (currentIndex > 0) items += IconMenu.Item(R.drawable.ic_prev, "上一集") { playIndex(currentIndex - 1) }
             if (currentIndex + 1 < queue.size) items += IconMenu.Item(R.drawable.ic_next, "下一集") { playIndex(currentIndex + 1) }
-            items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { skipIntro() }
-            items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { skipOutro() }
+            items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
+            items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
             items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
             IconMenu.show(anchor, items)
             return
         }
         val items = ArrayList<IconMenu.Item>()
-        items += IconMenu.Item(R.drawable.ic_audio, "音轨") { showTrackMenu("audio") }
+        items += IconMenu.Item(R.drawable.ic_audio, "音轨") { showTrackMenu("audio", anchor) }
         items += IconMenu.Item(R.drawable.ic_speed, "${fmtSpeed(speed)}×") { showSpeedMenu() }
         items += IconMenu.Item(R.drawable.ic_sub_delay, "字幕延迟") { showSubDelayMenu() }
         items += IconMenu.Item(R.drawable.ic_decoder, if (Repo.store.mpvHwdec) "硬解" else "软解") {
@@ -802,30 +798,44 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             mpv?.setPropertyString("hwdec", if (Repo.store.mpvHwdec) "mediacodec-copy" else "no")
             showHint(if (Repo.store.mpvHwdec) "硬件解码" else "软件解码")
         }
-        items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { skipIntro() }
-        items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { skipOutro() }
+        items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
+        items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
         IconMenu.show(anchor, items)
     }
 
-    /** 跳过片头：跳到设置里的片头秒数；已过片头则提示。 */
-    private fun skipIntro() {
-        val target = Repo.store.introSkipSec * 1000L
-        if (posSec * 1000 < target - 2000) {
-            seekTo(target)
-            showHint("已跳过片头")
-        } else toast("已过片头")
+    /** 跳过片头：弹窗里直接调秒数（即时保存），点跳过执行。 */
+    private fun showSkipIntroPopup(anchor: View) {
+        SkipPopup.show(
+            anchor, "跳过片头", Repo.store.introSkipSec, 10, 180,
+            onSecChanged = { Repo.store.introSkipSec = it },
+            onSkip = { sec ->
+                val target = sec * 1000L
+                if (posSec * 1000 < target - 2000) {
+                    seekTo(target)
+                    showHint("已跳过片头")
+                } else toast("已过片头")
+            },
+        )
     }
 
-    /** 跳过片尾：有下一集则直接下一集，否则跳到结尾。 */
-    private fun skipOutro() {
-        if (currentIndex + 1 < queue.size) playIndex(currentIndex + 1)
-        else {
-            val durMs = (durSec * 1000).toLong()
-            if (durMs <= 0) { toast("无法跳过片尾"); return }
-            seekTo(maxOf(0, durMs - 5000))
-            showHint("已跳过片尾")
-        }
+    /** 跳过片尾：弹窗里直接调秒数（即时保存），从当前位置向前跳过该秒数。 */
+    private fun showSkipOutroPopup(anchor: View) {
+        SkipPopup.show(
+            anchor, "跳过片尾", Repo.store.outroSkipSec, 10, 300,
+            onSecChanged = { Repo.store.outroSkipSec = it },
+            onSkip = { sec ->
+                val durMs = (durSec * 1000).toLong()
+                if (durMs <= 0) toast("无法跳过片尾")
+                else {
+                    val target = minOf(durMs - 2000, (posSec * 1000).toLong() + sec * 1000L).coerceAtLeast(0)
+                    if (target > posSec * 1000) {
+                        seekTo(target)
+                        showHint("已跳过片尾")
+                    } else toast("已在结尾")
+                }
+            },
+        )
     }
 
     /** 防误触：藏起控制条，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */
