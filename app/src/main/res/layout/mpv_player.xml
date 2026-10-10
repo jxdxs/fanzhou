@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MPV core player screen. Bottom bar mirrors exo_player_control_view.xml so both cores look alike. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/mpv_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <SurfaceView
+        android:id="@+id/mpv_surface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
+
+    <View
+        android:id="@+id/mpv_touch"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <FrameLayout
+        android:id="@+id/mpv_controls"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <View
+            android:id="@+id/mpv_controls_bg"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/fz_controls_scrim" />
+
+        <LinearLayout
+            android:id="@+id/mpv_top_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="8dp" />
+
+        <LinearLayout
+            android:id="@+id/mpv_progress_row"
+            android:baselineAligned="false"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/exo_styled_progress_layout_height"
+            android:layout_gravity="bottom"
+            android:layout_marginBottom="@dimen/exo_styled_progress_margin_bottom"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:layoutDirection="ltr">
+
+            <TextView
+                android:id="@+id/mpv_position"
+                style="@style/ExoStyledControls.TimeText.Position"
+                android:minWidth="44dp" />
+
+            <androidx.media3.ui.DefaultTimeBar
+                android:id="@+id/mpv_progress"
+                style="@style/ExoStyledControls.TimeBar"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/mpv_duration"
+                style="@style/ExoStyledControls.TimeText.Duration"
+                android:gravity="end"
+                android:minWidth="44dp" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/mpv_bottom_bar"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/exo_styled_bottom_bar_height"
+            android:layout_gravity="bottom"
+            android:background="@color/exo_bottom_bar_background"
+            android:layoutDirection="ltr">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical|start"
+                android:gravity="center_vertical"
+                android:layoutDirection="ltr"
+                android:paddingStart="@dimen/exo_styled_bottom_bar_time_padding"
+                android:paddingEnd="@dimen/exo_styled_bottom_bar_time_padding">
+
+                <ImageButton
+                    android:id="@+id/mpv_prev"
+                    style="@style/ExoStyledControls.Button.Center.Previous" />
+
+                <ImageButton
+                    android:id="@+id/mpv_rew"
+                    style="@style/ExoStyledControls.Button.Center"
+                    android:contentDescription="快退"
+                    android:padding="@dimen/exo_icon_padding"
+                    android:src="@drawable/exo_styled_controls_rewind" />
+
+                <ImageButton
+                    android:id="@+id/mpv_play_pause"
+                    style="@style/ExoStyledControls.Button.Center.PlayPause" />
+
+                <ImageButton
+                    android:id="@+id/mpv_ffwd"
+                    style="@style/ExoStyledControls.Button.Center"
+                    android:contentDescription="快进"
+                    android:padding="@dimen/exo_icon_padding"
+                    android:src="@drawable/exo_styled_controls_fastforward" />
+
+                <ImageButton
+                    android:id="@+id/mpv_next"
+                    style="@style/ExoStyledControls.Button.Center.Next" />
+
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical|end"
+                android:layoutDirection="ltr">
+
+                <!-- 倍速 button: landscape only (portrait has no spare width). -->
+                <TextView android:id="@+id/mpv_speed"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:minWidth="60dp"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:layout_marginEnd="8dp"
+                    android:layout_gravity="center_vertical"
+                    android:gravity="center"
+                    android:text="1x"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:contentDescription="播放速度"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:clickable="true"
+                    android:focusable="true"/>
+
+                <!-- 音轨 button: landscape only (code toggles it with mpv_speed); 音轨 used to be only inside the settings menu. -->
+                <ImageButton
+                    android:id="@+id/mpv_audio"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:padding="12dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="音轨"
+                    android:src="@drawable/ic_audio" />
+
+                <ImageButton
+                    android:id="@+id/mpv_subtitle"
+                    style="@style/ExoStyledControls.Button.Bottom.CC"
+                    android:contentDescription="字幕" />
+
+                <ImageButton
+                    android:id="@+id/mpv_settings"
+                    style="@style/ExoStyledControls.Button.Bottom.Settings"
+                    android:contentDescription="音轨与倍速" />
+            </LinearLayout>
+        </FrameLayout>
+    </FrameLayout>
+
+    <ProgressBar
+        android:id="@+id/mpv_loading"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:indeterminate="true"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/mpv_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:paddingStart="18dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="18dp"
+        android:paddingBottom="10dp"
+        android:textColor="@android:color/white"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+</FrameLayout>

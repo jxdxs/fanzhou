@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bottom control bar at 1.2x the original size (Kevin, v2.3.2: 1.5x was too big). -->
+    <dimen name="exo_icon_size">53dp</dimen>
+    <dimen name="exo_icon_padding">7dp</dimen>
+    <dimen name="exo_styled_bottom_bar_height">72dp</dimen>
+    <!-- Progress bar sits just above the taller bar (Media3 default 52dp for a 60dp bar). -->
+    <dimen name="exo_styled_progress_margin_bottom">64dp</dimen>
+</resources>
