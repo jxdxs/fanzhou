@@ -62,6 +62,7 @@ import com.kevin.fanzhou.R
 import com.kevin.fanzhou.Routes
 import com.kevin.fanzhou.cloud.CloudDrive
 import com.kevin.fanzhou.cloud.CloudFile
+import com.kevin.fanzhou.cloud.VideoThumbnails
 import com.kevin.fanzhou.data.CloudFav
 import com.kevin.fanzhou.data.CloudRecent
 import com.kevin.fanzhou.data.PlayQueue
@@ -107,21 +108,39 @@ private fun metaLine(f: CloudFile): String = listOf(
 
 /** Thumbnail with provider headers; falls back to a colored type icon underneath. */
 @Composable
-fun CloudThumb(f: CloudFile, headers: Map<String, String>, modifier: Modifier, iconSize: Int = 28) {
+fun CloudThumb(
+    f: CloudFile,
+    headers: Map<String, String>,
+    modifier: Modifier,
+    iconSize: Int = 28,
+    sid: String? = null,
+) {
     val (icon, color) = when {
         f.isDir -> R.drawable.ic_folder to FolderColor
         f.isVideo -> R.drawable.ic_movie to VideoColor
         f.isSubtitle -> R.drawable.ic_subtitle to SubColor
         else -> R.drawable.ic_file to OtherColor
     }
+    val ctx = LocalContext.current
+    var localThumb by remember(sid, f.id) {
+        mutableStateOf(if (sid != null && f.isVideo && f.thumb == null) VideoThumbnails.getCached(ctx, sid, f.id) else null)
+    }
+    if (sid != null && f.isVideo && f.thumb == null && localThumb == null) {
+        LaunchedEffect(sid, f.id) {
+            val extracted = VideoThumbnails.loadOrExtract(ctx, sid, f)
+            if (extracted != null) localThumb = extracted
+        }
+    }
+
+    val model: Any? = f.thumb ?: localThumb
     Box(modifier.background(color.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
         Icon(painterResource(icon), null, tint = color, modifier = Modifier.size(iconSize.dp))
-        val thumb = f.thumb
-        if (thumb != null) {
-            val ctx = LocalContext.current
-            val req = remember(thumb) {
-                ImageRequest.Builder(ctx).data(thumb).crossfade(true).apply {
-                    headers.forEach { (k, v) -> if (v.isNotEmpty()) addHeader(k, v) }
+        if (model != null) {
+            val req = remember(model) {
+                ImageRequest.Builder(ctx).data(model).crossfade(true).apply {
+                    if (model == f.thumb) {
+                        headers.forEach { (k, v) -> if (v.isNotEmpty()) addHeader(k, v) }
+                    }
                 }.build()
             }
             AsyncImage(model = req, contentDescription = f.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
@@ -137,9 +156,16 @@ private fun DurationTag(text: String, modifier: Modifier) {
 }
 
 @Composable
-private fun ThumbWithProgress(f: CloudFile, headers: Map<String, String>, pos: Long, modifier: Modifier, iconSize: Int = 28) {
+private fun ThumbWithProgress(
+    f: CloudFile,
+    headers: Map<String, String>,
+    pos: Long,
+    modifier: Modifier,
+    iconSize: Int = 28,
+    sid: String? = null,
+) {
     Box(modifier.aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp))) {
-        CloudThumb(f, headers, Modifier.fillMaxSize(), iconSize)
+        CloudThumb(f, headers, Modifier.fillMaxSize(), iconSize, sid = sid)
         if (f.duration > 0) DurationTag(fmtMs(f.duration), Modifier.align(Alignment.BottomEnd))
         if (pos > 0 && f.duration > 0) ProgressStrip((pos.toFloat() / f.duration).coerceIn(0.02f, 1f), Modifier.align(Alignment.BottomCenter))
     }
@@ -424,7 +450,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                     item(key = "_count") { CountLine(shown) }
                     items(shown, key = { it.id }) { f ->
                         val pos = remember(f.id, resumeTick) { if (f.isVideo) store.position(posKey(sid, f.id)) else 0L }
-                        FileRow(f, headers, pos, onClick = { open(f) }, onLong = { sheetFile = f })
+                        FileRow(f, headers, pos, sid, onClick = { open(f) }, onLong = { sheetFile = f })
                     }
                 }
                 view == VIEW_GRID -> LazyVerticalGrid(
@@ -441,7 +467,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                             Modifier.alpha(if (f.isDir || f.isVideo) 1f else 0.45f)
                                 .combinedClickable(onClick = { open(f) }, onLongClick = { sheetFile = f })
                         ) {
-                            ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 36)
+                            ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 36, sid = sid)
                             Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                             val meta = metaLine(f) + if (pos > 0 && f.duration <= 0) " · 看到 ${fmtMs(pos)}" else ""
                             Text(meta.trim(' ', '·'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = TextDim)
@@ -456,12 +482,13 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                     if (header != null) item(key = "_header", span = { GridItemSpan(maxLineSpan) }) { header() }
                     items(shown.size, key = { shown[it].id }) { i ->
                         val f = shown[i]
+                        val localThumb = remember(sid, f.id) { if (f.isVideo) VideoThumbnails.getCached(context, sid, f.id) else null }
                         val poster by produceState<String?>(null, f.id) { value = if (f.isDir || f.isVideo) Tmdb.poster(f.name) else null }
                         val pos = remember(f.id, resumeTick) { if (f.isVideo) store.position(posKey(sid, f.id)) else 0L }
                         PosterCard(
                             title = if (f.isDir || !f.isVideo) f.name else Tmdb.guess(f.name).title,
                             subtitle = if (f.isDir) "文件夹" else sizeText(f.size),
-                            imageUrl = poster,
+                            imageUrl = poster ?: localThumb?.absolutePath ?: f.thumb,
                             modifier = Modifier.alpha(if (f.isDir || f.isVideo) 1f else 0.45f),
                             progress = if (pos > 0 && f.duration > 0) (pos.toFloat() / f.duration) else 0f,
                             badge = if (pos > 0) "续" else null,
@@ -599,7 +626,7 @@ private fun CloudItemMenuDialog(
                         modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        ThumbWithProgress(f, headers, pos, Modifier.width(44.dp), 14)
+                        ThumbWithProgress(f, headers, pos, Modifier.width(44.dp), 14, sid = sid)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
@@ -725,16 +752,16 @@ private fun CountLine(shown: List<CloudFile>, modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileRow(f: CloudFile, headers: Map<String, String>, pos: Long, onClick: () -> Unit, onLong: () -> Unit) {
+private fun FileRow(f: CloudFile, headers: Map<String, String>, pos: Long, sid: String, onClick: () -> Unit, onLong: () -> Unit) {
     val dim = !(f.isDir || f.isVideo)
     Row(
         Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLong)
             .alpha(if (dim) 0.45f else 1f).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (f.isVideo || f.thumb != null) ThumbWithProgress(f, headers, pos, Modifier.width(120.dp), 26)
+        if (f.isVideo || f.thumb != null) ThumbWithProgress(f, headers, pos, Modifier.width(120.dp), 26, sid = sid)
         else Box(Modifier.width(120.dp).aspectRatio(16f / 9f), contentAlignment = Alignment.Center) {
-            CloudThumb(f, headers, Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)), 28)
+            CloudThumb(f, headers, Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)), 28, sid = sid)
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -847,7 +874,7 @@ private fun RootHeader(
                         Modifier.width(150.dp).clip(RoundedCornerShape(10.dp))
                             .combinedClickable(onClick = { onFavVideo(fav) }, onLongClick = { onFavRemove(fav) }),
                     ) {
-                        ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 26)
+                        ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 26, sid = s.id)
                         Text(fav.name.substringBeforeLast('.'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
                         Text(
                             listOfNotNull(fav.dirName, if (pos > 0) "看到 ${fmtMs(pos)}" else null).joinToString(" · ").ifEmpty { "根目录" },
@@ -868,7 +895,7 @@ private fun RootHeader(
                     val f = CloudFile(r.id, r.name, false, r.size, r.extra, thumb = r.thumb, duration = r.duration)
                     val pos = Repo.store.position(posKey(s.id, r.id))
                     Column(Modifier.width(150.dp).clickable { onRecent(r) }) {
-                        ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 26)
+                        ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 26, sid = s.id)
                         Text(r.name.substringBeforeLast('.'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
                         Text(
                             listOfNotNull(r.dirName, if (pos > 0) "看到 ${fmtMs(pos)}" else null).joinToString(" · ").ifEmpty { "根目录" },
