@@ -56,7 +56,7 @@ object LocalProxy {
         sock.use { s ->
             try {
                 s.soTimeout = 60_000
-                val ins = s.getInputStream()
+                val ins = java.io.BufferedInputStream(s.getInputStream(), 8192)
                 val out = BufferedOutputStream(s.getOutputStream(), 64 * 1024)
                 val requestLine = readLine(ins) ?: return
                 val headers = HashMap<String, String>()

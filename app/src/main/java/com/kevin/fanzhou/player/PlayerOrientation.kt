@@ -21,6 +21,14 @@ object PlayerOrientation {
 
     fun label(): String = modes.firstOrNull { it.first == Repo.store.playerOrientation }?.second ?: "横屏"
 
+    /** 点击直接在横屏与竖屏之间切换，不弹菜单。 */
+    fun toggle(a: Activity): String {
+        val next = if (Repo.store.playerOrientation == "portrait" || isPortrait(a)) "landscape" else "portrait"
+        Repo.store.playerOrientation = next
+        apply(a)
+        return if (next == "portrait") "竖屏" else "横屏"
+    }
+
     fun showMenu(a: Activity, anchor: View, onChanged: (String) -> Unit) {
         val menu = PopupMenu(a, anchor)
         val cur = Repo.store.playerOrientation

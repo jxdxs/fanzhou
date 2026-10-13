@@ -104,8 +104,9 @@
           android:contentDescription="选集"
           android:src="@drawable/ic_episodes"/>
 
-      <ImageButton android:id="@id/exo_subtitle"
-          style="@style/ExoStyledControls.Button.Bottom.CC"/>
+      <ImageButton android:id="@+id/fz_subtitle"
+          style="@style/ExoStyledControls.Button.Bottom.CC"
+          android:contentDescription="字幕"/>
 
       <ImageButton android:id="@id/exo_settings"
           style="@style/ExoStyledControls.Button.Bottom.Settings"/>

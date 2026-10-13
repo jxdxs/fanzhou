@@ -4,8 +4,10 @@ import android.annotation.SuppressLint
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
@@ -18,6 +20,7 @@ import android.util.Rational
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -26,12 +29,17 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.media3.session.MediaSession
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -66,12 +74,17 @@ import kotlin.math.min
 class PlayerActivity : ComponentActivity() {
 
     private lateinit var player: ExoPlayer
+    private var mediaSession: MediaSession? = null
+    private var activeExternalSubFile: File? = null
+    private var subDelaySec: Double = 0.0
     private lateinit var playerView: PlayerView
     private lateinit var topBar: LinearLayout
     private lateinit var titleView: TextView
     private lateinit var hintView: TextView
+    private lateinit var rotateBtn: ImageButton
     private lateinit var audio: AudioManager
     private val handler = Handler(Looper.getMainLooper())
+    private var isEnteringPip = false
 
     private var queue: MutableList<PlayItem> = mutableListOf()
     private var currentIndex = -1
@@ -109,6 +122,53 @@ class PlayerActivity : ComponentActivity() {
     private var coreForced = false
     private var switchedToMpv = false
     private val autoMpv get() = !coreForced && Repo.store.playerCore == com.kevin.fanzhou.data.CORE_AUTO && PlayerCore.mpvAvailable
+
+    private val pickSubLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) importLocalSub(uri)
+    }
+
+    private fun importLocalSub(uri: Uri) {
+        val idx = currentIndex
+        val p = queue.getOrNull(idx) ?: return
+        showHint("正在导入本地字幕…", sticky = true)
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("无法读取选中的字幕文件")
+                val name = runCatching {
+                    var n: String? = null
+                    contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) n = c.getString(c.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+                    }
+                    n
+                }.getOrNull() ?: uri.lastPathSegment ?: "local.srt"
+                val (data, rawExt) = com.kevin.fanzhou.subtitle.OnlineSubtitles.unwrap(bytes, name, File(cacheDir, "subs"))
+                val utf8Data = com.kevin.fanzhou.subtitle.OnlineSubtitles.toUtf8(data)
+                val ext = com.kevin.fanzhou.subtitle.OnlineSubtitles.hintExt(utf8Data, rawExt)
+                val safe = p.title.replace(Regex("""[^\p{L}\p{N}]+"""), "_").take(40).trim('_').ifEmpty { "sub" }
+                val out = File(File(cacheDir, "subs"), "${safe}_本地.$ext")
+                out.writeBytes(utf8Data)
+                withContext(Dispatchers.Main) {
+                    hintView.visibility = View.GONE
+                    val key = p.effectiveResumeKey
+                    val titleKey = "title:" + p.title.trim()
+                    Repo.store.saveSub(key, out.absolutePath)
+                    Repo.store.saveSub(titleKey, out.absolutePath)
+                    if (idx == currentIndex) {
+                        activeExternalSubFile = out
+                        subDelaySec = 0.0
+                        applyOnlineSub(out, com.kevin.fanzhou.subtitle.OnlineSubtitles.Hit("本地", "本地导入", "", ""))
+                    }
+                    toast("本地字幕已加载")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    hintView.visibility = View.GONE
+                    toast("导入失败：${e.message ?: "读取错误"}")
+                }
+            }
+        }
+    }
 
     private fun queueForHandoff(pos: Long): List<PlayItem> = queue.mapIndexed { i, p ->
         val orig = originals[i] ?: p
@@ -179,20 +239,40 @@ class PlayerActivity : ComponentActivity() {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         playerView = PlayerView(this).apply {
             useController = true
-            controllerShowTimeoutMs = 5000
+            controllerShowTimeoutMs = 10000
             setShowNextButton(true)
             setShowPreviousButton(true)
             setShowSubtitleButton(true)
             setShowFastForwardButton(true)
             setShowRewindButton(true)
             keepScreenOn = true
+            subtitleView?.visibility = View.VISIBLE
+            applySubtitleScale()
             setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { vis ->
                 topBar.visibility = vis
+                rotateBtn.visibility = vis
                 if (vis == View.VISIBLE) updateSpeedLabel()
                 if (vis != View.VISIBLE) hideSystemBars()
             })
         }
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+
+        rotateBtn = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_rotate)
+            contentDescription = "屏幕旋转"
+            setBackgroundResource(R.drawable.rotate_fab_bg)
+            setColorFilter(Color.WHITE)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setOnClickListener {
+                val label = PlayerOrientation.toggle(this@PlayerActivity)
+                showHint(label)
+                playerView.showController()
+            }
+        }
+        root.addView(rotateBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.START or Gravity.CENTER_VERTICAL).apply {
+            marginStart = dp(16)
+        })
 
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -221,9 +301,6 @@ class PlayerActivity : ComponentActivity() {
             setPadding(dp(8), 0, dp(8), 0)
         }
         topBar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
-        lateinit var rotateBtn: ImageButton
-        rotateBtn = iconBtn(R.drawable.ic_rotate, "屏幕方向") { PlayerOrientation.showMenu(this, rotateBtn) { showHint(it) } }
-        topBar.addView(rotateBtn, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_core, "切换到 MPV 内核") { switchToMpv(null, forced = true); showHint("MPV 内核") }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_hd, "画质") { showQualityMenu() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_aspect, "画面比例") { cycleResize() }, LinearLayout.LayoutParams(dp(44), dp(44)))
@@ -238,7 +315,7 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
         playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { v -> showPlayerSettingsMenu(v) }
         // The subtitle button opens our own menu (with 在线搜索字幕), not Media3's stock dialog.
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_subtitle)?.setOnClickListener { v -> showTextTrackMenu(v) }
+        playerView.findViewById<View>(R.id.fz_subtitle)?.setOnClickListener { v -> showTextTrackMenu(v) }
         updateSpeedLabel()
 
         hintView = TextView(this).apply {
@@ -255,6 +332,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun hideSystemBars() {
+        if (isEnteringPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) return
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val c = WindowInsetsControllerCompat(window, window.decorView)
         c.hide(WindowInsetsCompat.Type.systemBars())
@@ -398,6 +476,9 @@ class PlayerActivity : ComponentActivity() {
             .build()
         playerView.player = player
         player.addListener(listener)
+        mediaSession = MediaSession.Builder(this, player)
+            .setId("FanzhouExoSession_${java.util.UUID.randomUUID()}")
+            .build()
         startQueue()
         handler.postDelayed(progressTick, 10_000)
     }
@@ -423,6 +504,8 @@ class PlayerActivity : ComponentActivity() {
                 .setMimeType(s.mime)
                 .setLabel(s.label)
                 .setLanguage(s.lang)
+                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
                 .build()
         }
         return MediaItem.Builder()
@@ -434,8 +517,29 @@ class PlayerActivity : ComponentActivity() {
             .build()
     }
 
+    private fun ensureSavedSubsAttached() {
+        for (i in queue.indices) {
+            val p = queue[i]
+            val key = p.effectiveResumeKey
+            val titleKey = "title:" + p.title.trim()
+            val path = Repo.store.savedSub(key) ?: Repo.store.savedSub(titleKey) ?: continue
+            val file = File(path)
+            if (!file.exists()) continue
+            val uri = Uri.fromFile(file).toString()
+            if (p.subtitles.none { it.url == uri }) {
+                val label = "在线字幕"
+                val sub = SubTrack(uri, label, SubTrack.mimeFor(file.extension), "zh")
+                queue[i] = p.copy(subtitles = p.subtitles + sub)
+                if (i == currentIndex || i == PlayQueue.index) {
+                    pendingOnlineSubLabel = label
+                }
+            }
+        }
+    }
+
     private fun startQueue() {
         if (queue.isEmpty()) { finish(); return }
+        ensureSavedSubsAttached()
         val start = PlayQueue.index.coerceIn(0, queue.size - 1)
         val headers = queue.firstOrNull()?.headers ?: emptyMap()
         player.setMediaSources(queue.mapIndexed { i, p -> mediaSourceFactory(p.headers.ifEmpty { headers }).createMediaSource(toMediaItem(p, i)) }, start, queue[start].startMs)
@@ -503,13 +607,28 @@ class PlayerActivity : ComponentActivity() {
         // Official setters: Media3's controller owns these buttons' visibility.
         playerView.setShowPreviousButton(!portrait)
         playerView.setShowNextButton(!portrait)
-        playerView.setShowSubtitleButton(!portrait)
+        playerView.findViewById<View>(R.id.fz_subtitle)?.visibility =
+            if (portrait) View.GONE else View.VISIBLE
+        updateSubtitleButton()
         playerView.findViewById<View>(R.id.fz_audio)?.visibility = View.VISIBLE
         playerView.findViewById<View>(R.id.fz_episodes)?.visibility =
             if (queue.size <= 1) View.GONE else View.VISIBLE
         val t = playerView.findViewById<TextView>(R.id.fz_speed) ?: return
         t.visibility = View.VISIBLE
         if (::player.isInitialized) t.text = fmtSpeed(player.playbackParameters.speed)
+    }
+
+    private fun updateSubtitleButton() {
+        val btn = playerView.findViewById<ImageButton>(R.id.fz_subtitle) ?: return
+        if (!::player.isInitialized) return
+        val disabled = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val hasSelected = !disabled && player.currentTracks.groups.any { g ->
+            g.type == C.TRACK_TYPE_TEXT && (0 until g.length).any { g.isTrackSelected(it) }
+        }
+        btn.setImageResource(
+            if (hasSelected) androidx.media3.ui.R.drawable.exo_styled_controls_subtitle_on
+            else androidx.media3.ui.R.drawable.exo_styled_controls_subtitle_off
+        )
     }
 
     /** If the user manually picked a quality in this cloud folder before, start new episodes at it. */
@@ -594,6 +713,7 @@ class PlayerActivity : ComponentActivity() {
         if (!::player.isInitialized) return
         val items = ArrayList<IconMenu.Item>()
         items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTextTrackMenu(anchor) }
+        items += IconMenu.Item(R.drawable.ic_sub_delay, "字幕延迟") { showSubDelayMenu() }
         if (currentIndex > 0) {
             items += IconMenu.Item(R.drawable.ic_prev, "上一集") {
                 player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play()
@@ -666,6 +786,7 @@ class PlayerActivity : ComponentActivity() {
         playerView.hideController()
         playerView.controllerAutoShow = false
         topBar.visibility = View.GONE
+        rotateBtn.visibility = View.GONE
         ScreenLock.lock(this) { playerView.controllerAutoShow = true }
     }
 
@@ -679,37 +800,181 @@ class PlayerActivity : ComponentActivity() {
         }
         val items = ArrayList<TextMenu.Item>()
         items += TextMenu.Item("在线搜索字幕…") { showOnlineSubSearch() }
+        items += TextMenu.Item("导入本地字幕…") { pickSubLauncher.launch("*/*") }
+        items += TextMenu.Item("字幕大小与样式…") { showSubtitleStyleDialog() }
+        items += TextMenu.Item("字幕延迟同步…") { showSubDelayMenu() }
         items += TextMenu.Item("关闭字幕") {
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+            updateSubtitleButton()
         }
         choices.forEach { (g, i) ->
             val f = g.getTrackFormat(i)
             val label = listOfNotNull(f.label?.takeIf { it.isNotEmpty() }, f.language?.let { audioLangName(it) })
                 .joinToString(" · ").ifEmpty { "字幕" }
-            items += TextMenu.Item(label) {
+            val isSelected = g.isTrackSelected(i) && !player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+            val display = if (isSelected) "✓ $label" else label
+            items += TextMenu.Item(display) {
                 player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                     .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
                     .build()
+                playerView.subtitleView?.visibility = View.VISIBLE
+                updateSubtitleButton()
             }
         }
         TextMenu.show(anchor, items)
+    }
+
+    private fun applySubtitleScale() = applySubtitleStyle()
+
+    private fun applySubtitleStyle() {
+        if (!::playerView.isInitialized) return
+        val subView = playerView.subtitleView ?: return
+        val scale = Repo.store.subtitleScale
+        subView.setFractionalTextSize(androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * scale)
+
+        val textColor = when (Repo.store.subtitleColor) {
+            "yellow" -> android.graphics.Color.parseColor("#FFE600")
+            "cyan" -> android.graphics.Color.parseColor("#00FFFF")
+            else -> android.graphics.Color.WHITE
+        }
+        val style = androidx.media3.ui.CaptionStyleCompat(
+            textColor,
+            android.graphics.Color.TRANSPARENT,
+            android.graphics.Color.TRANSPARENT,
+            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+            android.graphics.Color.BLACK,
+            null
+        )
+        subView.setStyle(style)
+    }
+
+    private val subScaleOptions = listOf(
+        1.0f to "标准 (1.0x)",
+        1.25f to "中等 (1.25x)",
+        1.4f to "较大 (1.4x)",
+        1.6f to "大 (1.6x)",
+        1.85f to "特大 (1.85x)",
+        2.1f to "超大 (2.1x)"
+    )
+
+    private fun subScaleLabel(scale: Float) =
+        subScaleOptions.minByOrNull { kotlin.math.abs(it.first - scale) }?.second?.substringBefore(" ") ?: "较大"
+
+    private val subColorOptions = listOf(
+        "white" to "经典白 (白色高对比黑边)",
+        "yellow" to "电影黄 (明黄色高对比黑边)",
+        "cyan" to "清爽青 (青色高对比黑边)"
+    )
+
+    private fun subColorLabel(c: String) =
+        subColorOptions.firstOrNull { it.first == c }?.second?.substringBefore(" ") ?: "经典白"
+
+    private fun showSubtitleScaleDialog() {
+        val cur = Repo.store.subtitleScale
+        val sel = subScaleOptions.indexOfFirst { kotlin.math.abs(it.first - cur) < 0.05f }.coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕大小")
+            .setSingleChoiceItems(subScaleOptions.map { it.second }.toTypedArray(), sel) { d, which ->
+                val chosen = subScaleOptions[which].first
+                Repo.store.subtitleScale = chosen
+                applySubtitleStyle()
+                showHint("字幕大小：${subScaleOptions[which].second}")
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun showSubtitleColorDialog() {
+        val cur = Repo.store.subtitleColor
+        val sel = subColorOptions.indexOfFirst { it.first == cur }.coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕颜色")
+            .setSingleChoiceItems(subColorOptions.map { it.second }.toTypedArray(), sel) { d, which ->
+                val chosen = subColorOptions[which].first
+                Repo.store.subtitleColor = chosen
+                applySubtitleStyle()
+                showHint("字幕颜色：${subColorOptions[which].second.substringBefore(" ")}")
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun showSubtitleStyleDialog() {
+        val items = arrayOf(
+            "字幕大小（${subScaleLabel(Repo.store.subtitleScale)}）…",
+            "字幕颜色（${subColorLabel(Repo.store.subtitleColor)}）…"
+        )
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕大小与样式")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showSubtitleScaleDialog()
+                    1 -> showSubtitleColorDialog()
+                }
+            }
+            .show()
     }
 
     /** Search the configured online subtitle providers, download a pick and attach it. */
     private fun showOnlineSubSearch() {
         val idx = currentIndex
         val p = originals[idx] ?: queue.getOrNull(idx) ?: return
-        if (!OnlineSubtitles.anyConfigured()) { toast("请先到「设置 → 在线字幕」填入至少一家的令牌"); return }
+        if (!OnlineSubtitles.anyConfigured()) {
+            showUnconfiguredSubDialog(idx, p)
+            return
+        }
+        showSearchDialog(idx, p)
+    }
+
+    private fun showUnconfiguredSubDialog(idx: Int, p: PlayItem) {
+        val input = EditText(this).apply {
+            hint = "在此粘贴射手网 Token"
+            setSingleLine(true)
+        }
+        val container = FrameLayout(this).apply {
+            setPadding(50, 20, 50, 10)
+            addView(input)
+        }
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("未配置在线字幕令牌")
+            .setMessage("在线字幕搜索需要配置字幕源 API 令牌（免费）。\n\n• 推荐射手网：在 assrt.net 免费注册登录后，在个人中心复制 Token 即可。\n• 您可以在下方直接粘贴 Token 快速开始，或点击「前往设置」配置其他字幕源。")
+            .setView(container)
+            .setPositiveButton("保存并搜索") { _, _ ->
+                val token = input.text.toString().trim()
+                if (token.isEmpty()) {
+                    toast("未输入令牌")
+                    return@setPositiveButton
+                }
+                Repo.store.assrtToken = token
+                toast("已保存射手网令牌")
+                showSearchDialog(idx, p)
+            }
+            .setNeutralButton("前往设置") { _, _ ->
+                val intent = Intent(this, com.kevin.fanzhou.MainActivity::class.java).apply {
+                    putExtra("route", "settings")
+                    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                startActivity(intent)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showSearchDialog(idx: Int, p: PlayItem) {
         val input = EditText(this).apply {
             setText(OnlineSubtitles.cleanQuery(p.title))
             setSingleLine(true)
             setSelection(text.length)
         }
+        val container = FrameLayout(this).apply {
+            setPadding(50, 20, 50, 10)
+            addView(input)
+        }
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("在线搜索字幕")
-            .setView(input)
+            .setView(container)
             .setPositiveButton("搜索") { _, _ ->
                 val q = input.text.toString().trim()
                 if (q.length < 2) { toast("关键词太短"); return@setPositiveButton }
@@ -722,7 +987,7 @@ class PlayerActivity : ComponentActivity() {
                     if (hits.isEmpty()) { toast("没有搜到字幕，可以换个关键词再试"); return@launch }
                     val labels = hits.map { "【${it.provider}】${it.lang} · ${it.title}" }
                     android.app.AlertDialog.Builder(this@PlayerActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                        .setTitle("选择字幕")
+                        .setTitle("选择字幕（共 ${hits.size} 条）")
                         .setItems(labels.toTypedArray()) { _, w -> downloadOnlineSub(hits[w], idx) }
                         .show()
                 }
@@ -743,10 +1008,89 @@ class PlayerActivity : ComponentActivity() {
                 return@launch
             }
             hintView.visibility = View.GONE
-            p.resumeKey?.let { Repo.store.saveSub(it, file.absolutePath) }
-            if (idx == currentIndex) applyOnlineSub(file, hit)
+            val key = p.effectiveResumeKey
+            val titleKey = "title:" + p.title.trim()
+            Repo.store.saveSub(key, file.absolutePath)
+            Repo.store.saveSub(titleKey, file.absolutePath)
+            if (idx == currentIndex) {
+                activeExternalSubFile = file
+                subDelaySec = 0.0
+                applyOnlineSub(file, hit)
+            }
             toast("字幕已加载：${hit.provider}")
         }
+    }
+
+    /** Updates subtitles for current item without recreating whole player buffer */
+    private fun updateSubtitlesCurrent(newItem: PlayItem, pos: Long) {
+        val idx = currentIndex
+        queue[idx] = newItem
+        val wasPlaying = player.playWhenReady
+        val ms = mediaSourceFactory(newItem.headers).createMediaSource(toMediaItem(newItem, idx))
+        player.removeMediaItem(idx)
+        player.addMediaSource(idx, ms)
+        player.seekTo(idx, pos)
+        player.playWhenReady = wasPlaying
+    }
+
+    /** Subtitle delay fine-tuning menu */
+    private fun showSubDelayMenu() {
+        val srcFile = activeExternalSubFile
+        if (srcFile == null || !srcFile.exists()) {
+            android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("字幕延迟")
+                .setMessage("当前播放的是内嵌字幕或尚未加载外挂字幕。\n\n• ExoPlayer 仅支持对外挂/在线字幕进行时间轴微调。\n• 如需对内嵌字幕进行毫秒级延迟调整，推荐切换至 MPV 内核。")
+                .setPositiveButton("切换 MPV 内核") { _, _ ->
+                    switchToMpv(null, forced = true)
+                }
+                .setNeutralButton("搜索在线字幕") { _, _ ->
+                    showOnlineSubSearch()
+                }
+                .setNegativeButton("知道了", null)
+                .show()
+            return
+        }
+
+        val opts = doubleArrayOf(-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0)
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕延迟（当前 ${"%+.1f".format(subDelaySec)} 秒）")
+            .setItems(opts.map { if (it == 0.0) "复位" else "%+.1f 秒".format(it) }.toTypedArray()) { _, w ->
+                val newDelay = if (opts[w] == 0.0) 0.0 else subDelaySec + opts[w]
+                subDelaySec = newDelay
+                showHint("正在调整字幕时间轴…", sticky = true)
+                lifecycleScope.launch(Dispatchers.IO) {
+                    try {
+                        val raw = srcFile.readText(Charsets.UTF_8)
+                        val shifted = OnlineSubtitles.shiftSubtitle(raw, srcFile.extension, (newDelay * 1000).toLong())
+                        val subsDir = File(cacheDir, "subs")
+                        if (!subsDir.exists()) subsDir.mkdirs()
+                        val shiftedFile = File(subsDir, "shifted_${srcFile.name}")
+                        shiftedFile.writeText(shifted, Charsets.UTF_8)
+                        withContext(Dispatchers.Main) {
+                            hintView.visibility = View.GONE
+                            val cur = queue.getOrNull(currentIndex) ?: return@withContext
+                            val uri = Uri.fromFile(shiftedFile).toString()
+                            val label = "在线字幕" + (if (newDelay != 0.0) " (${"%+.1f".format(newDelay)}s)" else "")
+                            val sub = SubTrack(uri, label, SubTrack.mimeFor(shiftedFile.extension), "zh")
+                            pendingOnlineSubLabel = label
+                            val oldUri = Uri.fromFile(srcFile).toString()
+                            val shiftedPrefix = Uri.fromFile(File(subsDir, "shifted_")).toString()
+                            val filteredSubs = cur.subtitles.filterNot { it.url == oldUri || it.url.startsWith(shiftedPrefix) }
+                            val newSubs = filteredSubs + sub
+                            val pos = player.currentPosition.coerceAtLeast(0)
+                            updateSubtitlesCurrent(cur.copy(subtitles = newSubs), pos)
+                            selectOnlineSubtitleTrack()
+                            showHint("字幕延迟 ${"%+.1f".format(newDelay)} 秒")
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            hintView.visibility = View.GONE
+                            toast("字幕调整失败：${e.message}")
+                        }
+                    }
+                }
+            }
+            .show()
     }
 
     /** Attach a downloaded subtitle file to the current item and select it. */
@@ -755,10 +1099,13 @@ class PlayerActivity : ComponentActivity() {
         val cur = queue.getOrNull(idx) ?: return
         val label = "在线字幕" + (hit?.let { "·${it.provider} ${it.lang}" } ?: "")
         val uri = android.net.Uri.fromFile(file).toString()
-        if (cur.subtitles.any { it.url == uri }) return
         val sub = SubTrack(uri, label, SubTrack.mimeFor(file.extension), "zh")
         pendingOnlineSubLabel = label
-        replaceCurrent(cur.copy(subtitles = cur.subtitles + sub), player.currentPosition.coerceAtLeast(0))
+        activeExternalSubFile = file
+        subDelaySec = 0.0
+        val newSubs = cur.subtitles.filterNot { it.url == uri } + sub
+        updateSubtitlesCurrent(cur.copy(subtitles = newSubs), player.currentPosition.coerceAtLeast(0))
+        selectOnlineSubtitleTrack()
     }
 
     /** Re-attach the subtitle previously downloaded for this item, if any. */
@@ -766,21 +1113,87 @@ class PlayerActivity : ComponentActivity() {
         val idx = currentIndex
         if (!savedSubAttached.add(idx)) return
         val p = queue.getOrNull(idx) ?: return
-        val key = p.resumeKey ?: return
-        val path = Repo.store.savedSub(key) ?: return
+        val key = p.effectiveResumeKey
+        val titleKey = "title:" + p.title.trim()
+        val path = Repo.store.savedSub(key) ?: Repo.store.savedSub(titleKey) ?: return
         val file = File(path)
         if (!file.exists()) return
         val uri = android.net.Uri.fromFile(file).toString()
-        if (p.subtitles.any { it.url == uri }) return
         val label = "在线字幕"
         val sub = SubTrack(uri, label, SubTrack.mimeFor(file.extension), "zh")
         pendingOnlineSubLabel = label
+        activeExternalSubFile = file
+        subDelaySec = 0.0
+        val cur = queue.getOrNull(idx) ?: return
+        if (cur.subtitles.any { it.url == uri }) {
+            selectOnlineSubtitleTrack()
+            return
+        }
         lifecycleScope.launch {
             if (idx == currentIndex && ::player.isInitialized) {
-                val cur = queue.getOrNull(idx) ?: return@launch
-                replaceCurrent(cur.copy(subtitles = cur.subtitles + sub), player.currentPosition.coerceAtLeast(0))
+                val current = queue.getOrNull(idx) ?: return@launch
+                val curPos = player.currentPosition.coerceAtLeast(0)
+                val newSubs = current.subtitles.filterNot { it.url == uri } + sub
+                updateSubtitlesCurrent(current.copy(subtitles = newSubs), curPos)
+                selectOnlineSubtitleTrack()
             }
         }
+    }
+
+    private fun selectOnlineSubtitleTrack(tracks: Tracks? = null) {
+        val want = pendingOnlineSubLabel ?: return
+        val currentTracks = tracks ?: (if (::player.isInitialized) player.currentTracks else null) ?: return
+        var matchedGroup: Tracks.Group? = null
+        var matchedIndex = -1
+
+        // 1. Try exact label match
+        for (g in currentTracks.groups) {
+            if (g.type != C.TRACK_TYPE_TEXT) continue
+            for (i in 0 until g.length) {
+                val fl = g.getTrackFormat(i).label
+                if (fl == want) {
+                    matchedGroup = g
+                    matchedIndex = i
+                    break
+                }
+            }
+            if (matchedGroup != null) break
+        }
+
+        // 2. Try prefix/contains match
+        if (matchedGroup == null) {
+            for (g in currentTracks.groups) {
+                if (g.type != C.TRACK_TYPE_TEXT) continue
+                for (i in 0 until g.length) {
+                    val fl = g.getTrackFormat(i).label
+                    if (fl != null && (fl.startsWith("在线字幕") || want.startsWith(fl) || fl.contains(want))) {
+                        matchedGroup = g
+                        matchedIndex = i
+                        break
+                    }
+                }
+                if (matchedGroup != null) break
+            }
+        }
+
+        // 3. Fallback: pick the last text track group
+        if (matchedGroup == null) {
+            val textGroups = currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+            if (textGroups.isNotEmpty()) {
+                matchedGroup = textGroups.last()
+                matchedIndex = 0
+            }
+        }
+
+        if (matchedGroup != null && matchedIndex >= 0) {
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .setOverrideForType(TrackSelectionOverride(matchedGroup.mediaTrackGroup, matchedIndex))
+                .build()
+            pendingOnlineSubLabel = null
+        }
+        playerView.subtitleView?.visibility = View.VISIBLE
+        updateSubtitleButton()
     }
 
     private fun showSpeedPicker(anchor: View) {
@@ -795,6 +1208,12 @@ class PlayerActivity : ComponentActivity() {
         override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) { updateSpeedLabel() }
         override fun onEvents(p: Player, events: Player.Events) {
             if (p.duration > 0) { lastPos = p.currentPosition; lastDur = p.duration }
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY && pendingOnlineSubLabel != null) {
+                selectOnlineSubtitleTrack()
+            }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -819,22 +1238,14 @@ class PlayerActivity : ComponentActivity() {
                 if (!tryTranscode(reason)) toast(if (videoBad) "该视频的画面格式本机无法解码" else "该视频的音频格式本机无法解码")
             }
             // Select the online subtitle that was just attached.
-            val want = pendingOnlineSubLabel
-            if (want != null) {
-                outer@ for (g in tracks.groups) {
-                    if (g.type != C.TRACK_TYPE_TEXT) continue
-                    for (i in 0 until g.length) {
-                        if (g.getTrackFormat(i).label == want) {
-                            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
-                                .build()
-                            pendingOnlineSubLabel = null
-                            break@outer
-                        }
-                    }
-                }
+            if (pendingOnlineSubLabel != null) {
+                selectOnlineSubtitleTrack(tracks)
             }
+            updateSubtitleButton()
+        }
+
+        override fun onTrackSelectionParametersChanged(parameters: androidx.media3.common.TrackSelectionParameters) {
+            updateSubtitleButton()
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -1000,14 +1411,76 @@ class PlayerActivity : ComponentActivity() {
 
     private fun enterPip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (!::player.isInitialized) return
+
+        playerView.hideController()
+        playerView.useController = false
+        topBar.visibility = View.GONE
+        rotateBtn.visibility = View.GONE
+        hintView.visibility = View.GONE
+
         val fmt = player.videoFormat
-        val ratio = if (fmt != null && fmt.width > 0 && fmt.height > 0) Rational(fmt.width, fmt.height) else Rational(16, 9)
+        val vw = fmt?.width ?: 0
+        val vh = fmt?.height ?: 0
+        val ratio = if (vw > 0 && vh > 0) Rational(vw, vh) else Rational(16, 9)
         val clamped = when {
             ratio.toFloat() > 2.39f -> Rational(239, 100)
             ratio.toFloat() < 0.42f -> Rational(42, 100)
             else -> ratio
         }
-        try { enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(clamped).build()) } catch (_: Exception) {}
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(clamped)
+
+        val contentFrame = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+        val sourceRect = if (contentFrame != null && contentFrame.width > 0 && contentFrame.height > 0) {
+            val loc = IntArray(2)
+            contentFrame.getLocationInWindow(loc)
+            Rect(loc[0], loc[1], loc[0] + contentFrame.width, loc[1] + contentFrame.height)
+        } else if (playerView.width > 0 && playerView.height > 0) {
+            val loc = IntArray(2)
+            playerView.getLocationInWindow(loc)
+            val pw = playerView.width
+            val ph = playerView.height
+            if (vw > 0 && vh > 0) {
+                val videoAspect = vw.toFloat() / vh
+                val viewAspect = pw.toFloat() / ph
+                val (w, h) = if (videoAspect > viewAspect) {
+                    pw to (pw / videoAspect).toInt().coerceAtLeast(1)
+                } else {
+                    (ph * videoAspect).toInt().coerceAtLeast(1) to ph
+                }
+                val left = loc[0] + (pw - w) / 2
+                val top = loc[1] + (ph - h) / 2
+                Rect(left, top, left + w, top + h)
+            } else {
+                Rect(loc[0], loc[1], loc[0] + pw, loc[1] + ph)
+            }
+        } else null
+
+        if (sourceRect != null && sourceRect.width() > 0 && sourceRect.height() > 0) {
+            builder.setSourceRectHint(sourceRect)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setSeamlessResizeEnabled(true)
+        }
+
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        isEnteringPip = true
+
+        val entered = try {
+            enterPictureInPictureMode(builder.build())
+        } catch (_: Exception) {
+            false
+        }
+
+        if (!entered) {
+            isEnteringPip = false
+            playerView.useController = true
+            topBar.visibility = View.VISIBLE
+            rotateBtn.visibility = View.VISIBLE
+            PlayerOrientation.apply(this)
+        }
     }
 
     override fun onUserLeaveHint() {
@@ -1101,6 +1574,9 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        if (isEnteringPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
+            return
+        }
         if (::playerView.isInitialized) fitExoBottomBar()
         updateSpeedLabel()
         hideSystemBars()
@@ -1108,8 +1584,18 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isEnteringPip = false
         playerView.useController = !isInPictureInPictureMode
-        if (isInPictureInPictureMode) { playerView.hideController(); topBar.visibility = View.GONE }
+        if (isInPictureInPictureMode) {
+            playerView.hideController()
+            topBar.visibility = View.GONE
+            rotateBtn.visibility = View.GONE
+            hintView.visibility = View.GONE
+        } else {
+            PlayerOrientation.apply(this)
+            hideSystemBars()
+            if (::playerView.isInitialized) fitExoBottomBar()
+        }
     }
 
     override fun onStop() {
@@ -1123,10 +1609,94 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        ScreenLock.release(this)
+        mediaSession?.release()
+        mediaSession = null
         if (::player.isInitialized) {
             reportStopCurrent()
             player.release()
         }
         super.onDestroy()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (!::player.isInitialized) return super.onKeyDown(keyCode, event)
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> {
+                if (player.isPlaying) player.pause() else player.play()
+                showHint(if (player.isPlaying) "❚❚" else "▶")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                player.play()
+                showHint("▶")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                player.pause()
+                showHint("❚❚")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                val step = Repo.store.seekStepSec * 1000L
+                player.seekTo(player.currentPosition + step)
+                showHint("⏩ ${Repo.store.seekStepSec}秒")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                val step = Repo.store.seekStepSec * 1000L
+                player.seekTo(max(0, player.currentPosition - step))
+                showHint("⏪ ${Repo.store.seekStepSec}秒")
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                if (currentIndex + 1 < queue.size) {
+                    player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                    player.play()
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                if (currentIndex > 0) {
+                    player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs)
+                    player.play()
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                if (!playerView.isControllerFullyVisible) {
+                    playerView.showController()
+                } else {
+                    if (player.isPlaying) player.pause() else player.play()
+                    showHint(if (player.isPlaying) "❚❚" else "▶")
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                val step = Repo.store.seekStepSec * 1000L
+                player.seekTo(max(0, player.currentPosition - step))
+                showHint("⏪ ${Repo.store.seekStepSec}秒")
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                val step = Repo.store.seekStepSec * 1000L
+                player.seekTo(player.currentPosition + step)
+                showHint("⏩ ${Repo.store.seekStepSec}秒")
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+                return true
+            }
+            KeyEvent.KEYCODE_MENU -> {
+                showPlayerSettingsMenu(playerView)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 }

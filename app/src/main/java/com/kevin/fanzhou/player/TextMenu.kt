@@ -13,13 +13,13 @@ import android.widget.TextView
 import com.kevin.fanzhou.R
 
 /**
- * 紧凑的竖向文字菜单，替代又宽又高的 AlertDialog 列表（比如字幕菜单）。
+ * 紧凑的竖向文字菜单，替代又宽又高的列表（比如字幕菜单）。
  * 贴在 [anchor] 正上方、右对齐弹出；点外面或选一项后消失。
  */
 object TextMenu {
     data class Item(val label: String, val onClick: () -> Unit)
 
-    fun show(anchor: View, items: List<Item>, maxHeightDp: Int = 340) {
+    fun show(anchor: View, items: List<Item>, maxHeightDp: Int = 240) {
         if (items.isEmpty()) return
         val ctx = anchor.context
         val dm = ctx.resources.displayMetrics
@@ -35,7 +35,7 @@ object TextMenu {
         }
         val list = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(4), 0, dp(4))
+            setPadding(0, dp(3), 0, dp(3))
         }
         val ripple = TypedValue().also {
             ctx.theme.resolveAttribute(android.R.attr.selectableItemBackground, it, true)
@@ -43,15 +43,15 @@ object TextMenu {
         items.forEach { item ->
             val tv = TextView(ctx).apply {
                 text = item.label
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                 setTextColor(Color.WHITE)
-                setPadding(dp(16), dp(12), dp(16), dp(12))
+                setPadding(dp(14), dp(8), dp(14), dp(8))
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 setBackgroundResource(ripple)
                 isClickable = true
                 isFocusable = true
-                layoutParams = LinearLayout.LayoutParams(dp(260), ViewGroup.LayoutParams.WRAP_CONTENT)
+                layoutParams = LinearLayout.LayoutParams(dp(190), ViewGroup.LayoutParams.WRAP_CONTENT)
             }
             tv.setOnClickListener { popup.dismiss(); item.onClick() }
             list.addView(tv)
@@ -64,7 +64,7 @@ object TextMenu {
         }
         popup.contentView = panel
         panel.measure(
-            View.MeasureSpec.makeMeasureSpec(dp(280), View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(dp(200), View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(dp(maxHeightDp), View.MeasureSpec.AT_MOST),
         )
         val w = panel.measuredWidth

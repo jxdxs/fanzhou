@@ -15,12 +15,17 @@ import com.kevin.fanzhou.R
  * 点锁图标会先弹确认框，点「退出锁定」才真正解锁。
  */
 object ScreenLock {
-    private var overlay: View? = null
+    private var overlayRef: java.lang.ref.WeakReference<View>? = null
+    private var activityRef: java.lang.ref.WeakReference<Activity>? = null
 
-    fun isLocked(): Boolean = overlay != null
+    fun isLocked(activity: Activity? = null): Boolean {
+        val v = overlayRef?.get() ?: return false
+        if (activity != null && activityRef?.get() !== activity) return false
+        return true
+    }
 
     fun lock(activity: Activity, onUnlock: (() -> Unit)? = null) {
-        if (overlay != null) return
+        unlock()
         val root = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
         val dm = activity.resources.displayMetrics
         val touch = FrameLayout(activity).apply {
@@ -60,12 +65,22 @@ object ScreenLock {
         }
         touch.addView(icon)
         root.addView(touch)
-        overlay = touch
+        overlayRef = java.lang.ref.WeakReference(touch)
+        activityRef = java.lang.ref.WeakReference(activity)
     }
 
     fun unlock() {
-        val o = overlay ?: return
-        (o.parent as? ViewGroup)?.removeView(o)
-        overlay = null
+        val o = overlayRef?.get()
+        if (o != null) {
+            (o.parent as? ViewGroup)?.removeView(o)
+        }
+        overlayRef = null
+        activityRef = null
+    }
+
+    fun release(activity: Activity) {
+        if (activityRef?.get() === activity) {
+            unlock()
+        }
     }
 }

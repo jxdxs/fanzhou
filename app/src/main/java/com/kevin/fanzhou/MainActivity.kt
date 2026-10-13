@@ -8,7 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,11 +20,25 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.kevin.fanzhou.ui.*
 
+import android.content.Intent
+
 class MainActivity : ComponentActivity() {
+    private var pendingRoute by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingRoute = intent?.getStringExtra("route")
         enableEdgeToEdge()
-        setContent { FanzhouTheme { AppRoot() } }
+        setContent { FanzhouTheme { AppRoot(pendingRoute) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val r = intent.getStringExtra("route")
+        if (!r.isNullOrEmpty()) {
+            pendingRoute = r
+        }
     }
 }
 
@@ -47,8 +61,16 @@ object Routes {
 }
 
 @Composable
-fun AppRoot() {
+fun AppRoot(startRoute: String? = null) {
     val nav = rememberNavController()
+    LaunchedEffect(startRoute) {
+        if (!startRoute.isNullOrEmpty() && startRoute != "home") {
+            nav.navigate(startRoute) {
+                popUpTo("home") { saveState = true }
+                launchSingleTop = true
+            }
+        }
+    }
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
     val tabs = listOf("home" to "首页", "sources" to "媒体源", "settings" to "设置")
@@ -62,7 +84,7 @@ fun AppRoot() {
                             onClick = { nav.navigate(r) { popUpTo("home") { saveState = true }; launchSingleTop = true; restoreState = true } },
                             icon = {
                                 Icon(
-                                    when (r) { "home" -> Icons.Filled.Home; "sources" -> Icons.Filled.List; else -> Icons.Filled.Settings },
+                                    when (r) { "home" -> Icons.Filled.Home; "sources" -> Icons.AutoMirrored.Filled.List; else -> Icons.Filled.Settings },
                                     contentDescription = label,
                                 )
                             },

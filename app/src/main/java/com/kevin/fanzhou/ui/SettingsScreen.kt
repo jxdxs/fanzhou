@@ -35,6 +35,8 @@ fun SettingsScreen() {
     var step by remember { mutableIntStateOf(store.seekStepSec) }
     var introSkip by remember { mutableIntStateOf(store.introSkipSec) }
     var outroSkip by remember { mutableIntStateOf(store.outroSkipSec) }
+    var subScale by remember { mutableFloatStateOf(store.subtitleScale) }
+    var subColor by remember { mutableStateOf(store.subtitleColor) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
     var gridMin by remember { mutableIntStateOf(store.gridColumnsMin) }
     var core by remember { mutableStateOf(store.playerCore) }
@@ -79,6 +81,14 @@ fun SettingsScreen() {
                 Slider(introSkip.toFloat(), { introSkip = it.toInt(); store.introSkipSec = introSkip }, valueRange = 10f..180f, steps = 33)
                 Text("跳过片尾：${outroSkip} 秒", fontSize = 14.sp)
                 Slider(outroSkip.toFloat(), { outroSkip = it.toInt(); store.outroSkipSec = outroSkip }, valueRange = 10f..300f, steps = 57)
+                Text("字幕大小：${"%.2f".format(subScale).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
+                Slider(subScale, { subScale = (Math.round(it * 20) / 20f); store.subtitleScale = subScale }, valueRange = 0.8f..2.2f, steps = 13)
+                Text("字幕颜色：${when(subColor) { "yellow" -> "电影黄"; "cyan" -> "清爽青"; else -> "经典白" }}", fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("white" to "经典白", "yellow" to "电影黄", "cyan" to "清爽青").forEach { (k, name) ->
+                        FilterChip(selected = subColor == k, onClick = { subColor = k; store.subtitleColor = k }, label = { Text(name) })
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("自动播放下一集", modifier = Modifier.weight(1f))
                     Switch(autoNext, { autoNext = it; store.autoPlayNext = it })
@@ -98,11 +108,11 @@ fun SettingsScreen() {
                 }
             }
             Group("在线字幕", listOf(store.assrtToken, store.subdlKey, store.osApiKey).count { it.isNotBlank() }.let { if (it == 0) "未设置" else "已接入 $it 家" }) {
-                Text("播放没有字幕的资源时，可在字幕菜单里点「在线搜索字幕」。填哪家的令牌就用哪家搜索，可都填。", fontSize = 12.sp, color = TextDim)
-                OutlinedTextField(assrtT, { assrtT = it }, label = { Text("射手网 assrt Token") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(subdlK, { subdlK = it }, label = { Text("SubDL API Key") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(osK, { osK = it }, label = { Text("OpenSubtitles API Key") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Text("OpenSubtitles 不登录账号时，每天可下载 5 条；射手网和 SubDL 没有按天卡死的限制。下载的字幕会缓存在本机，下次播同一集自动带上。", fontSize = 12.sp, color = TextDim)
+                Text("播放没有字幕的资源时，可在字幕菜单里点「在线搜索字幕」。支持配置以下字幕源（按需填入任意一家即可）：", fontSize = 12.sp, color = TextDim)
+                OutlinedTextField(assrtT, { assrtT = it }, label = { Text("射手网(伪) assrt Token（推荐，中文字幕最全）") }, placeholder = { Text("可在 assrt.net 免费注册获取") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(subdlK, { subdlK = it }, label = { Text("SubDL API Key（多语言字幕）") }, placeholder = { Text("可在 subdl.com 获取") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(osK, { osK = it }, label = { Text("OpenSubtitles API Key（全球字幕库）") }, placeholder = { Text("可在 opensubtitles.com 获取") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("说明：\n• 射手网(伪)：国内中文字幕最全面，个人使用无严格按天限制。\n• SubDL：支持电影与剧集，每日提供免费配额。\n• OpenSubtitles：支持全球多语言，每日免费提供下载额度。\n• 下载成功的字幕将缓存在本机，下次播放同一视频将自动加载。", fontSize = 12.sp, color = TextDim)
                 Row {
                     Button(onClick = { store.assrtToken = assrtT; store.subdlKey = subdlK; store.osApiKey = osK; Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show() }) { Text("保存") }
                     Spacer(Modifier.width(10.dp))

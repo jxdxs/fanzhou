@@ -236,6 +236,7 @@ class JellyfinClient(val source: Source) {
             sourceId = source.id,
             jfItemId = item.id,
             jfMediaSourceId = msId,
+            resumeKey = "jf:${source.id}:${item.id}",
             container = item.mediaSources.firstOrNull()?.container?.substringBefore(',')?.lowercase(),
             subtitles = externalSubtitles(item).map { (url, st) ->
                 val codec = st.codec ?: url.substringAfterLast('.').substringBefore('?')
@@ -264,7 +265,7 @@ class JellyfinClient(val source: Source) {
 
     companion object {
         const val CLIENT = "Fanzhou"
-        const val VERSION = "2.3.4"
+        val VERSION = com.kevin.fanzhou.BuildConfig.VERSION_NAME
         fun normalizeUrl(input: String): String {
             var u = input.trim().trimEnd('/')
             if (!u.startsWith("http://") && !u.startsWith("https://")) u = "http://$u"

@@ -171,7 +171,13 @@ data class PlayItem(
     val mime: String? = null,
     /** Container/extension hint (mkv, iso, rmvb…) used to pick the player core. */
     val container: String? = null,
-)
+) {
+    val effectiveResumeKey: String
+        get() = resumeKey
+            ?: jfItemId?.let { "jf:${sourceId ?: ""}:$it" }
+            ?: cloudFile?.let { "cloud:${sourceId ?: ""}:${it.id}" }
+            ?: "url:${url.substringBefore('?')}"
+}
 
 data class SubTrack(val url: String, val label: String, val mime: String, val lang: String? = null) {
     companion object {

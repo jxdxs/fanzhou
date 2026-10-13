@@ -4,11 +4,16 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,17 +23,21 @@ import android.util.Rational
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -64,6 +73,7 @@ import kotlin.math.min
 class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHolder.Callback {
 
     private var mpv: MPVLib? = null
+    private var mediaSession: MediaSession? = null
     private lateinit var surface: SurfaceView
     private lateinit var controls: View
     private lateinit var topBar: LinearLayout
@@ -77,6 +87,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private lateinit var touch: View
     private lateinit var audio: AudioManager
     private val handler = Handler(Looper.getMainLooper())
+    private var isEnteringPip = false
 
     private var queue: MutableList<PlayItem> = mutableListOf()
     private var currentIndex = -1
@@ -112,9 +123,53 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private val aspectNames = arrayOf("适应", "裁剪填充", "拉伸")
     private var longPressActive = false
     private var speedBeforeLongPress = 1.0
-
     private val posMs get() = (posSec * 1000).toLong()
     private val durMs get() = (durSec * 1000).toLong()
+
+    private val pickSubLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) importLocalSub(uri)
+    }
+
+    private fun importLocalSub(uri: Uri) {
+        val idx = currentIndex
+        val p = queue.getOrNull(idx) ?: return
+        showHint("正在导入本地字幕…", sticky = true)
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("无法读取选中的字幕文件")
+                val name = runCatching {
+                    var n: String? = null
+                    contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) n = c.getString(c.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+                    }
+                    n
+                }.getOrNull() ?: uri.lastPathSegment ?: "local.srt"
+                val (data, rawExt) = OnlineSubtitles.unwrap(bytes, name, File(cacheDir, "subs"))
+                val utf8Data = OnlineSubtitles.toUtf8(data)
+                val ext = OnlineSubtitles.hintExt(utf8Data, rawExt)
+                val safe = p.title.replace(Regex("""[^\p{L}\p{N}]+"""), "_").take(40).trim('_').ifEmpty { "sub" }
+                val out = File(File(cacheDir, "subs"), "${safe}_本地.$ext")
+                out.writeBytes(utf8Data)
+                withContext(Dispatchers.Main) {
+                    hintView.visibility = View.GONE
+                    val key = p.effectiveResumeKey
+                    val titleKey = "title:" + p.title.trim()
+                    Repo.store.saveSub(key, out.absolutePath)
+                    Repo.store.saveSub(titleKey, out.absolutePath)
+                    if (idx == currentIndex) {
+                        addOnlineSub(out)
+                    }
+                    toast("本地字幕已加载")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    hintView.visibility = View.GONE
+                    toast("导入失败：${e.message ?: "读取错误"}")
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -134,6 +189,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             PlayerCore.launch(this, mpv = false, forced = true)
             finish(); return
         }
+        initMediaSession()
         surface.holder.addCallback(this)
         playIndex(PlayQueue.index.coerceIn(0, queue.size - 1))
         handler.postDelayed(uiTick, 500)
@@ -179,7 +235,15 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         m.setOptionString("osd-fonts-dir", "/system/fonts")
         m.setOptionString("sub-font", "Noto Sans CJK SC")
         m.setOptionString("sub-font-size", "46")
+        val subColorHex = when (Repo.store.subtitleColor) {
+            "yellow" -> "#FFE600"
+            "cyan" -> "#00FFFF"
+            else -> "#FFFFFF"
+        }
+        m.setOptionString("sub-color", subColorHex)
+        m.setOptionString("sub-border-color", "#000000")
         m.setOptionString("sub-border-size", "2.5")
+        m.setOptionString("sub-scale", "${Repo.store.subtitleScale}")
         m.setOptionString("user-agent", "Fanzhou/2.0 (Android) libmpv")
         m.init()
         m.setOptionString("force-window", "no")
@@ -267,6 +331,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
         posSec = p.startMs / 1000.0
         durSec = 0.0
+        updateMediaSessionMetadata(p)
+        updateMediaSessionState()
         load(p, p.startMs)
         reportStart(p)
         applyFolderQuality(i)
@@ -346,6 +412,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val m = mpv ?: return
         m.setPropertyString("start", "none")
         val p = queue.getOrNull(currentIndex) ?: return
+        updateMediaSessionMetadata(p)
+        updateMediaSessionState()
         attachSavedSub(p)
         // External subtitles (sibling files / Jellyfin / cloud).
         p.subtitles.forEach { s ->
@@ -486,6 +554,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 timeBar.setBufferedPosition(((posSec + max(0.0, cacheSec - posSec)) * 1000).toLong())
                 posView.text = fmt(posMs)
                 durView.text = fmt(durMs)
+                updateMediaSessionState()
             }
             handler.postDelayed(this, 500)
         }
@@ -530,14 +599,17 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             setPadding(dp(8), 0, dp(8), 0)
         }
         topBar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
-        lateinit var rotateBtn: ImageButton
-        rotateBtn = iconBtn(R.drawable.ic_rotate, "屏幕方向") { PlayerOrientation.showMenu(this, rotateBtn) { showHint(it) } }
-        topBar.addView(rotateBtn, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_core, "切换到 ExoPlayer 内核") { switchToExo() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_hd, "画质") { showQualityMenu() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_aspect, "画面比例") { cycleAspect() }, LinearLayout.LayoutParams(dp(44), dp(44)))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             topBar.addView(iconBtn(R.drawable.ic_pip, "画中画") { enterPip() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4) })
+        }
+
+        findViewById<View>(R.id.mpv_rotate)?.setOnClickListener {
+            val label = PlayerOrientation.toggle(this)
+            showHint(label)
+            bumpControls()
         }
 
         val step = Repo.store.seekStepSec
@@ -567,6 +639,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private fun updatePlayPause() {
         playPause.setImageResource(if (paused) androidx.media3.ui.R.drawable.exo_styled_controls_play else androidx.media3.ui.R.drawable.exo_styled_controls_pause)
         playPause.contentDescription = if (paused) "播放" else "暂停"
+        updateMediaSessionState()
     }
 
     private val hideControlsRunnable = Runnable { hideControls() }
@@ -576,7 +649,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     }
     private fun bumpControls() {
         handler.removeCallbacks(hideControlsRunnable)
-        if (!paused) handler.postDelayed(hideControlsRunnable, 5000)
+        if (!paused) handler.postDelayed(hideControlsRunnable, 10000)
     }
     private fun hideControls() {
         controls.visibility = View.GONE
@@ -637,6 +710,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     }
 
     private fun hideSystemBars() {
+        if (isEnteringPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) return
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val c = WindowInsetsControllerCompat(window, window.decorView)
         c.hide(WindowInsetsCompat.Type.systemBars())
@@ -687,9 +761,19 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (isSub) {
             val items = ArrayList<TextMenu.Item>()
             items += TextMenu.Item("在线搜索字幕…") { showOnlineSubSearch() }
-            items += TextMenu.Item("关闭字幕") { mpv?.setPropertyString("sid", "no") }
+            items += TextMenu.Item("导入本地字幕…") { pickSubLauncher.launch("*/*") }
+            items += TextMenu.Item("字幕大小与样式…") { showSubtitleStyleDialog() }
+            items += TextMenu.Item("字幕延迟同步…") { showSubDelayMenu() }
+            items += TextMenu.Item("关闭字幕") {
+                mpv?.setPropertyString("sub-visibility", "no")
+                mpv?.setPropertyString("sid", "no")
+            }
             list.forEach { t ->
-                items += TextMenu.Item(t.label) { mpv?.setPropertyString("sid", t.id.toString()) }
+                val display = if (t.selected) "✓ ${t.label}" else t.label
+                items += TextMenu.Item(display) {
+                    mpv?.setPropertyString("sub-visibility", "yes")
+                    mpv?.setPropertyString("sid", t.id.toString())
+                }
             }
             TextMenu.show(anchor, items)
             return
@@ -708,19 +792,144 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             .show()
     }
 
+    private fun applySubtitleScale() = applySubtitleStyle()
+
+    private fun applySubtitleStyle() {
+        mpv?.setPropertyDouble("sub-scale", Repo.store.subtitleScale.toDouble())
+        val hex = when (Repo.store.subtitleColor) {
+            "yellow" -> "#FFE600"
+            "cyan" -> "#00FFFF"
+            else -> "#FFFFFF"
+        }
+        mpv?.setPropertyString("sub-color", hex)
+        mpv?.setPropertyString("sub-border-color", "#000000")
+    }
+
+    private val subScaleOptions = listOf(
+        1.0f to "标准 (1.0x)",
+        1.25f to "中等 (1.25x)",
+        1.4f to "较大 (1.4x)",
+        1.6f to "大 (1.6x)",
+        1.85f to "特大 (1.85x)",
+        2.1f to "超大 (2.1x)"
+    )
+
+    private fun subScaleLabel(scale: Float) =
+        subScaleOptions.minByOrNull { kotlin.math.abs(it.first - scale) }?.second?.substringBefore(" ") ?: "较大"
+
+    private val subColorOptions = listOf(
+        "white" to "经典白 (白色高对比黑边)",
+        "yellow" to "电影黄 (明黄色高对比黑边)",
+        "cyan" to "清爽青 (青色高对比黑边)"
+    )
+
+    private fun subColorLabel(c: String) =
+        subColorOptions.firstOrNull { it.first == c }?.second?.substringBefore(" ") ?: "经典白"
+
+    private fun showSubtitleScaleDialog() {
+        val cur = Repo.store.subtitleScale
+        val sel = subScaleOptions.indexOfFirst { kotlin.math.abs(it.first - cur) < 0.05f }.coerceAtLeast(0)
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕大小")
+            .setSingleChoiceItems(subScaleOptions.map { it.second }.toTypedArray(), sel) { d, which ->
+                val chosen = subScaleOptions[which].first
+                Repo.store.subtitleScale = chosen
+                applySubtitleStyle()
+                showHint("字幕大小：${subScaleOptions[which].second}")
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun showSubtitleColorDialog() {
+        val cur = Repo.store.subtitleColor
+        val sel = subColorOptions.indexOfFirst { it.first == cur }.coerceAtLeast(0)
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕颜色")
+            .setSingleChoiceItems(subColorOptions.map { it.second }.toTypedArray(), sel) { d, which ->
+                val chosen = subColorOptions[which].first
+                Repo.store.subtitleColor = chosen
+                applySubtitleStyle()
+                showHint("字幕颜色：${subColorOptions[which].second.substringBefore(" ")}")
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun showSubtitleStyleDialog() {
+        val items = arrayOf(
+            "字幕大小（${subScaleLabel(Repo.store.subtitleScale)}）…",
+            "字幕颜色（${subColorLabel(Repo.store.subtitleColor)}）…"
+        )
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕大小与样式")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showSubtitleScaleDialog()
+                    1 -> showSubtitleColorDialog()
+                }
+            }
+            .show()
+    }
+
     /** Search the configured online subtitle providers, download a pick and attach it. */
     private fun showOnlineSubSearch() {
         val idx = currentIndex
         val p = originals[idx] ?: queue.getOrNull(idx) ?: return
-        if (!OnlineSubtitles.anyConfigured()) { toast("请先到「设置 → 在线字幕」填入至少一家的令牌"); return }
+        if (!OnlineSubtitles.anyConfigured()) {
+            showUnconfiguredSubDialog(idx, p)
+            return
+        }
+        showSearchDialog(idx, p)
+    }
+
+    private fun showUnconfiguredSubDialog(idx: Int, p: PlayItem) {
+        val input = EditText(this).apply {
+            hint = "在此粘贴射手网 Token"
+            setSingleLine(true)
+        }
+        val container = FrameLayout(this).apply {
+            setPadding(50, 20, 50, 10)
+            addView(input)
+        }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("未配置在线字幕令牌")
+            .setMessage("在线字幕搜索需要配置字幕源 API 令牌（免费）。\n\n• 推荐射手网：在 assrt.net 免费注册登录后，在个人中心复制 Token 即可。\n• 您可以在下方直接粘贴 Token 快速开始，或点击「前往设置」配置其他字幕源。")
+            .setView(container)
+            .setPositiveButton("保存并搜索") { _, _ ->
+                val token = input.text.toString().trim()
+                if (token.isEmpty()) {
+                    toast("未输入令牌")
+                    return@setPositiveButton
+                }
+                Repo.store.assrtToken = token
+                toast("已保存射手网令牌")
+                showSearchDialog(idx, p)
+            }
+            .setNeutralButton("前往设置") { _, _ ->
+                val intent = Intent(this, com.kevin.fanzhou.MainActivity::class.java).apply {
+                    putExtra("route", "settings")
+                    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                startActivity(intent)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showSearchDialog(idx: Int, p: PlayItem) {
         val input = EditText(this).apply {
             setText(OnlineSubtitles.cleanQuery(p.title))
             setSingleLine(true)
             setSelection(text.length)
         }
+        val container = FrameLayout(this).apply {
+            setPadding(50, 20, 50, 10)
+            addView(input)
+        }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("在线搜索字幕")
-            .setView(input)
+            .setView(container)
             .setPositiveButton("搜索") { _, _ ->
                 val q = input.text.toString().trim()
                 if (q.length < 2) { toast("关键词太短"); return@setPositiveButton }
@@ -733,7 +942,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     if (hits.isEmpty()) { toast("没有搜到字幕，可以换个关键词再试"); return@launch }
                     val labels = hits.map { "【${it.provider}】${it.lang} · ${it.title}" }
                     AlertDialog.Builder(this@MpvPlayerActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                        .setTitle("选择字幕")
+                        .setTitle("选择字幕（共 ${hits.size} 条）")
                         .setItems(labels.toTypedArray()) { _, w -> downloadOnlineSub(hits[w], idx) }
                         .show()
                 }
@@ -754,7 +963,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 return@launch
             }
             hintView.visibility = View.GONE
-            p.resumeKey?.let { Repo.store.saveSub(it, file.absolutePath) }
+            val key = p.effectiveResumeKey
+            val titleKey = "title:" + p.title.trim()
+            Repo.store.saveSub(key, file.absolutePath)
+            Repo.store.saveSub(titleKey, file.absolutePath)
             if (idx == currentIndex) addOnlineSub(file)
             toast("字幕已加载：${hit.provider}")
         }
@@ -762,14 +974,16 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private fun addOnlineSub(file: File) {
         val tag = "$currentIndex:${file.absolutePath}"
-        if (!addedOnlineSubs.add(tag)) return
+        addedOnlineSubs.add(tag)
+        mpv?.setPropertyString("sub-visibility", "yes")
         mpv?.command(arrayOf("sub-add", file.absolutePath, "select", "在线字幕"))
     }
 
     /** Re-attach the subtitle previously downloaded for this item, if any. */
     private fun attachSavedSub(p: PlayItem) {
-        val key = p.resumeKey ?: return
-        val path = Repo.store.savedSub(key) ?: return
+        val key = p.effectiveResumeKey
+        val titleKey = "title:" + p.title.trim()
+        val path = Repo.store.savedSub(key) ?: Repo.store.savedSub(titleKey) ?: return
         val file = File(path)
         if (file.exists()) addOnlineSub(file)
     }
@@ -1070,6 +1284,12 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private fun enterPip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (mpv == null) return
+
+        handler.removeCallbacks(hideControlsRunnable)
+        controls.visibility = View.GONE
+        hintView.visibility = View.GONE
+
         val w = mpv?.getPropertyInt("video-params/dw") ?: 0
         val h = mpv?.getPropertyInt("video-params/dh") ?: 0
         val ratio = if (w > 0 && h > 0) Rational(w, h) else Rational(16, 9)
@@ -1078,7 +1298,52 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             ratio.toFloat() < 0.42f -> Rational(42, 100)
             else -> ratio
         }
-        try { enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(clamped).build()) } catch (_: Exception) {}
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(clamped)
+
+        val sourceRect = if (::surface.isInitialized && surface.width > 0 && surface.height > 0) {
+            val loc = IntArray(2)
+            surface.getLocationInWindow(loc)
+            val sw = surface.width
+            val sh = surface.height
+            if (w > 0 && h > 0) {
+                val videoAspect = w.toFloat() / h
+                val surfaceAspect = sw.toFloat() / sh
+                val (rw, rh) = if (videoAspect > surfaceAspect) {
+                    sw to (sw / videoAspect).toInt().coerceAtLeast(1)
+                } else {
+                    (sh * videoAspect).toInt().coerceAtLeast(1) to sh
+                }
+                val left = loc[0] + (sw - rw) / 2
+                val top = loc[1] + (sh - rh) / 2
+                Rect(left, top, left + rw, top + rh)
+            } else {
+                Rect(loc[0], loc[1], loc[0] + sw, loc[1] + sh)
+            }
+        } else null
+
+        if (sourceRect != null && sourceRect.width() > 0 && sourceRect.height() > 0) {
+            builder.setSourceRectHint(sourceRect)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setSeamlessResizeEnabled(true)
+        }
+
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        isEnteringPip = true
+
+        val entered = try {
+            enterPictureInPictureMode(builder.build())
+        } catch (_: Exception) {
+            false
+        }
+
+        if (!entered) {
+            isEnteringPip = false
+            controls.visibility = View.VISIBLE
+            PlayerOrientation.apply(this)
+        }
     }
 
     override fun onUserLeaveHint() {
@@ -1094,6 +1359,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        if (isEnteringPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
+            return
+        }
         PlayerOrientation.compactButtons(this, window.decorView, mpvTransportIds); stretchMpvRow()
         updateSpeedLabel()
         hideSystemBars()
@@ -1101,7 +1369,17 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        if (isInPictureInPictureMode) { handler.removeCallbacks(hideControlsRunnable); controls.visibility = View.GONE }
+        isEnteringPip = false
+        if (isInPictureInPictureMode) {
+            handler.removeCallbacks(hideControlsRunnable)
+            controls.visibility = View.GONE
+            hintView.visibility = View.GONE
+        } else {
+            PlayerOrientation.apply(this)
+            hideSystemBars()
+            PlayerOrientation.compactButtons(this, window.decorView, mpvTransportIds)
+            stretchMpvRow()
+        }
     }
 
     override fun onStop() {
@@ -1115,6 +1393,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        ScreenLock.release(this)
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
         mpv?.let { m ->
             if (!switching) saveCurrent(stopped = true)
             m.removeObserver(this)
@@ -1122,5 +1404,146 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
         mpv = null
         super.onDestroy()
+    }
+
+    // ---------------- MediaSession & Key events ----------------
+
+    private fun initMediaSession() {
+        val session = MediaSession(this, "FanzhouMpvSession_${java.util.UUID.randomUUID()}")
+        session.setCallback(object : MediaSession.Callback() {
+            override fun onPlay() {
+                mpv?.setPropertyBoolean("pause", false)
+            }
+            override fun onPause() {
+                mpv?.setPropertyBoolean("pause", true)
+            }
+            override fun onSkipToNext() {
+                if (currentIndex + 1 < queue.size) playIndex(currentIndex + 1)
+            }
+            override fun onSkipToPrevious() {
+                if (currentIndex > 0) playIndex(currentIndex - 1)
+            }
+            override fun onSeekTo(pos: Long) {
+                seekTo(pos)
+            }
+            override fun onFastForward() {
+                seekRelative(Repo.store.seekStepSec)
+            }
+            override fun onRewind() {
+                seekRelative(-Repo.store.seekStepSec)
+            }
+            override fun onStop() {
+                saveCurrent(stopped = true)
+                finish()
+            }
+        })
+        session.setFlags(
+            MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or
+            MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS
+        )
+        session.isActive = true
+        mediaSession = session
+    }
+
+    private fun updateMediaSessionState() {
+        val session = mediaSession ?: return
+        val state = when {
+            buffering -> PlaybackState.STATE_BUFFERING
+            paused -> PlaybackState.STATE_PAUSED
+            else -> PlaybackState.STATE_PLAYING
+        }
+        val actions = PlaybackState.ACTION_PLAY or
+                PlaybackState.ACTION_PAUSE or
+                PlaybackState.ACTION_PLAY_PAUSE or
+                PlaybackState.ACTION_SEEK_TO or
+                PlaybackState.ACTION_FAST_FORWARD or
+                PlaybackState.ACTION_REWIND or
+                PlaybackState.ACTION_SKIP_TO_NEXT or
+                PlaybackState.ACTION_SKIP_TO_PREVIOUS
+        val stateBuilder = PlaybackState.Builder()
+            .setActions(actions)
+            .setState(state, posMs.coerceAtLeast(0), speed.toFloat())
+        session.setPlaybackState(stateBuilder.build())
+    }
+
+    private fun updateMediaSessionMetadata(p: PlayItem) {
+        val session = mediaSession ?: return
+        val metaBuilder = MediaMetadata.Builder()
+            .putString(MediaMetadata.METADATA_KEY_TITLE, p.title)
+            .putString(MediaMetadata.METADATA_KEY_ARTIST, p.subtitle ?: "饭舟")
+            .putLong(MediaMetadata.METADATA_KEY_DURATION, durMs.coerceAtLeast(0))
+        session.setMetadata(metaBuilder.build())
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> {
+                togglePause()
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                mpv?.setPropertyBoolean("pause", false)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                mpv?.setPropertyBoolean("pause", true)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                seekRelative(Repo.store.seekStepSec)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                seekRelative(-Repo.store.seekStepSec)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                if (currentIndex + 1 < queue.size) playIndex(currentIndex + 1)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                if (currentIndex > 0) playIndex(currentIndex - 1)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                if (controls.visibility != View.VISIBLE) {
+                    showControls()
+                } else {
+                    togglePause()
+                    bumpControls()
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                seekRelative(-Repo.store.seekStepSec)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                seekRelative(Repo.store.seekStepSec)
+                bumpControls()
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+                return true
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+                return true
+            }
+            KeyEvent.KEYCODE_MENU -> {
+                showSettingsMenu(controls)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 }

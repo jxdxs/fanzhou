@@ -1,6 +1,22 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp" android:height="24dp"
-    android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="#FFFFFF"
-        android:pathData="M4,18l8.5,-6L6,6v12zM13,18l8.5,-6L13,6v12z" />
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 水平中心切线 -->
+    <path
+        android:strokeColor="#55FFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round"
+        android:pathData="M4,12h16" />
+    <!-- 圆圈上半部弧线 (顺时针向前) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:pathData="M4.5,12A7.5,7.5 0 0,1 19.5,11" />
+    <!-- 上半部右侧向下箭头 (跳过片头) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M16,10.5 L23,10.5 L19.5,15.5 Z" />
 </vector>

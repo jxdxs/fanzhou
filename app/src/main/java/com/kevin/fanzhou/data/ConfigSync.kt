@@ -51,16 +51,16 @@ object ConfigSync {
 
     // ---- settings ----
     var davUrl: String
-        get() = sync.getString("url", "https://dav.yinmaolee.fnos.net") ?: ""
+        get() = sync.getString("url", "") ?: ""
         set(v) { sync.edit().putString("url", v.trim().trimEnd('/')).apply() }
     var davUser: String
-        get() = sync.getString("user", "yun") ?: "yun"
+        get() = sync.getString("user", "") ?: ""
         set(v) { sync.edit().putString("user", v.trim()).apply() }
     var davPass: String
         get() = sync.getString("pass", "") ?: ""
         set(v) { sync.edit().putString("pass", v).apply() }
     var davDir: String
-        get() = sync.getString("dir", "/app/jellyfin-lyy") ?: "/app/jellyfin-lyy"
+        get() = sync.getString("dir", "/fanzhou") ?: "/fanzhou"
         set(v) { sync.edit().putString("dir", "/" + v.trim().trim('/')).apply() }
     var autoSync: Boolean
         get() = sync.getBoolean("auto", false)

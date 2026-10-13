@@ -80,16 +80,21 @@ private val OtherColor = Color(0xFF6B7280)
 
 private fun posKey(sid: String, id: String) = "cloud:$sid:$id"
 
+private val SYSTEM_ZONE = java.time.ZoneId.systemDefault()
+private val CLOUD_DATE_CURRENT_YEAR = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")
+private val CLOUD_DATE_OTHER_YEAR = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd")
+private val FULL_DATE_FORMATTER = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
 fun cloudDateText(ms: Long): String {
     if (ms <= 0) return ""
-    val now = java.util.Calendar.getInstance()
-    val c = java.util.Calendar.getInstance().apply { timeInMillis = ms }
-    val pattern = if (c.get(java.util.Calendar.YEAR) == now.get(java.util.Calendar.YEAR)) "MM-dd HH:mm" else "yyyy-MM-dd"
-    return java.text.SimpleDateFormat(pattern, java.util.Locale.CHINA).format(java.util.Date(ms))
+    val ldt = java.time.Instant.ofEpochMilli(ms).atZone(SYSTEM_ZONE).toLocalDateTime()
+    val thisYear = java.time.Year.now(SYSTEM_ZONE).value
+    val fmt = if (ldt.year == thisYear) CLOUD_DATE_CURRENT_YEAR else CLOUD_DATE_OTHER_YEAR
+    return ldt.format(fmt)
 }
 
 private fun fullDateText(ms: Long): String =
-    if (ms <= 0) "未知" else java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date(ms))
+    if (ms <= 0) "未知" else java.time.Instant.ofEpochMilli(ms).atZone(SYSTEM_ZONE).format(FULL_DATE_FORMATTER)
 
 private fun metaLine(f: CloudFile): String = listOf(
     if (f.isDir) "文件夹" else sizeText(f.size),

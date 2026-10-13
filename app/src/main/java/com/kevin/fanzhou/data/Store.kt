@@ -98,6 +98,16 @@ class Store(context: Context) {
         get() = prefs.getInt("outro_skip_sec", 90)
         set(v) { prefs.edit().putInt("outro_skip_sec", v).apply() }
 
+    /** 字幕大小缩放倍率：1.0f (标准), 1.25f (较大), 1.5f (大), 1.75f (特大). 默认 1.3f */
+    var subtitleScale: Float
+        get() = prefs.getFloat("subtitle_scale", 1.3f)
+        set(v) { prefs.edit().putFloat("subtitle_scale", v).apply() }
+
+    /** 字幕文字颜色: "white" (白色), "yellow" (经典明黄), "cyan" (青色). 默认 "white" */
+    var subtitleColor: String
+        get() = prefs.getString("subtitle_color", "white") ?: "white"
+        set(v) { prefs.edit().putString("subtitle_color", v).apply() }
+
     var folderSort: String
         get() = prefs.getString("folder_sort", "name") ?: "name"
         set(v) { prefs.edit().putString("folder_sort", v).apply() }

@@ -153,23 +153,38 @@ fun epochMs(v: Long): Long = when {
     else -> v
 }
 
+private val SHANGHAI_ZONE = java.time.ZoneId.of("Asia/Shanghai")
+private val DT_SEC_FORMATTER = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+private val DT_MIN_FORMATTER = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+
 /** Parses "2024-01-02T03:04:05.000Z", "2024-01-02 03:04[:05]" or a numeric epoch to epoch ms; 0 on failure. */
 fun parseIsoTime(s: String?): Long {
     val t = s?.trim()?.takeIf { it.isNotEmpty() } ?: return 0
     t.toLongOrNull()?.let { return epochMs(it) }
     t.toDoubleOrNull()?.let { return epochMs(it.toLong()) }
-    val patterns = listOf(
-        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", "yyyy-MM-dd'T'HH:mm:ssXXX", "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'",
-        "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd",
-    )
-    for (p in patterns) {
-        try {
-            val f = java.text.SimpleDateFormat(p, java.util.Locale.US)
-            if (p.endsWith("'Z'")) f.timeZone = java.util.TimeZone.getTimeZone("UTC")
-            else if (!p.contains("XXX")) f.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-            f.isLenient = false
-            return f.parse(t)?.time ?: continue
-        } catch (_: Exception) {}
+    if ('T' in t) {
+        val instantMs = runCatching { java.time.Instant.parse(t).toEpochMilli() }.getOrNull()
+        if (instantMs != null) return instantMs
+        val offsetMs = runCatching { java.time.OffsetDateTime.parse(t).toInstant().toEpochMilli() }.getOrNull()
+        if (offsetMs != null) return offsetMs
+    }
+    if (t.length >= 19 && t[10] == ' ') {
+        val ms = runCatching {
+            java.time.LocalDateTime.parse(t.substring(0, 19), DT_SEC_FORMATTER).atZone(SHANGHAI_ZONE).toInstant().toEpochMilli()
+        }.getOrNull()
+        if (ms != null) return ms
+    }
+    if (t.length == 16 && t[10] == ' ') {
+        val ms = runCatching {
+            java.time.LocalDateTime.parse(t, DT_MIN_FORMATTER).atZone(SHANGHAI_ZONE).toInstant().toEpochMilli()
+        }.getOrNull()
+        if (ms != null) return ms
+    }
+    if (t.length == 10 && t[4] == '-' && t[7] == '-') {
+        val ms = runCatching {
+            java.time.LocalDate.parse(t, java.time.format.DateTimeFormatter.ISO_LOCAL_DATE).atStartOfDay(SHANGHAI_ZONE).toInstant().toEpochMilli()
+        }.getOrNull()
+        if (ms != null) return ms
     }
     return 0
 }

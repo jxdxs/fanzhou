@@ -15,8 +15,8 @@ android {
         minSdk = 26
         targetSdk = 35
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
-        versionCode = 41
-        versionName = "2.3.23"
+        versionCode = 42
+        versionName = "2.3.24"
     }
 
     signingConfigs {
@@ -43,7 +43,10 @@ android {
         // libmpv 1.0.0 is compiled with Kotlin 2.2; allow reading its newer metadata.
         freeCompilerArgs += listOf("-Xskip-metadata-version-check")
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     lint { checkReleaseBuilds = false }
     testOptions { unitTests.isIncludeAndroidResources = true; unitTests.all { it.systemProperty("java.awt.headless", "true"); it.testLogging.showStandardStreams = true } }
     packaging {
@@ -68,6 +71,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.7.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.7.1")
     implementation("androidx.media3:media3-ui:1.7.1")
+    implementation("androidx.media3:media3-session:1.7.1")
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.6.1+2")
     implementation("dev.jdtech.mpv:libmpv:1.0.0") { exclude(group = "org.jetbrains.kotlin") }
     implementation("com.hierynomus:smbj:0.14.0")
@@ -76,6 +80,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("com.github.junrar:junrar:7.5.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
