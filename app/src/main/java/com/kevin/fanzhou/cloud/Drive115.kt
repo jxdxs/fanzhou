@@ -36,14 +36,23 @@ class Drive115(source: Source) : CloudDrive(source) {
                 val fid = it.str("fid")
                 // 115 times: "te"/"tp"/"tu" are epoch-second strings; "t" is either epoch seconds or "yyyy-MM-dd HH:mm".
                 val mod = listOf("te", "tu", "t", "tp").firstNotNullOfOrNull { k -> parseIsoTime(it.str(k)).takeIf { v -> v > 0 } } ?: 0L
-                if (fid != null) out.add(
-                    CloudFile(
-                        fid, it.str("n") ?: "", false, it.long("s"), it.str("pc"),
-                        modified = mod,
-                        thumb = it.str("u")?.takeIf { u -> u.startsWith("http") },
-                        duration = (it.num("play_long") * 1000).toLong(),
+                if (fid != null) {
+                    val rawThumb = it.str("thumb") ?: it.str("snap") ?: it.str("u")
+                    val thumbUrl = when {
+                        rawThumb.isNullOrEmpty() -> null
+                        rawThumb.startsWith("http://") || rawThumb.startsWith("https://") -> rawThumb
+                        rawThumb.startsWith("//") -> "https:$rawThumb"
+                        else -> null
+                    }
+                    out.add(
+                        CloudFile(
+                            fid, it.str("n") ?: "", false, it.long("s"), it.str("pc"),
+                            modified = mod,
+                            thumb = thumbUrl,
+                            duration = (it.num("play_long") * 1000).toLong(),
+                        )
                     )
-                )
+                }
                 else out.add(CloudFile(it.str("cid") ?: "", it.str("n") ?: "", true, modified = mod))
             }
             val count = o.long("count").toInt()

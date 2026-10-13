@@ -5,8 +5,8 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.util.LruCache
 import com.kevin.fanzhou.player.LocalProxy
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -19,14 +19,16 @@ import java.util.concurrent.Executors
 /**
  * Automatically extracts and caches video frame snapshots (thumbnails) for cloud video files
  * that lack provider-supplied cover images.
+ * Optimized for high speed with parallel workers and fast initial sync frame decoding.
  */
 object VideoThumbnails {
 
     private val failedKeys = ConcurrentHashMap.newKeySet<String>()
     private val inProgress = ConcurrentHashMap.newKeySet<String>()
+    private val memoryCache = LruCache<String, File>(256)
 
-    // Bounded to 2 background threads to avoid stressing network and device resources
-    private val thumbDispatcher = Executors.newFixedThreadPool(2) { r ->
+    // 6 parallel background workers for rapid batch extraction without UI jank
+    private val thumbDispatcher = Executors.newFixedThreadPool(6) { r ->
         Thread(r, "VideoThumbExtractor").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }.asCoroutineDispatcher()
 
@@ -42,8 +44,13 @@ object VideoThumbnails {
     }
 
     fun getCached(context: Context, sourceId: String, fileId: String): File? {
+        val key = "$sourceId:$fileId"
+        memoryCache.get(key)?.let { return it }
         val f = cacheFile(context, sourceId, fileId)
-        return if (f.exists() && f.length() > 0) f else null
+        return if (f.exists() && f.length() > 0) {
+            memoryCache.put(key, f)
+            f
+        } else null
     }
 
     suspend fun loadOrExtract(context: Context, sourceId: String, file: CloudFile): File? {
@@ -56,7 +63,7 @@ object VideoThumbnails {
 
         return try {
             withContext(thumbDispatcher) {
-                withTimeoutOrNull(8_000L) {
+                withTimeoutOrNull(5_000L) {
                     extract(context, sourceId, file)
                 }
             } ?: run {
@@ -95,23 +102,25 @@ object VideoThumbnails {
                 scheme == "file" || url.startsWith("/") -> {
                     retriever.setDataSource(url)
                 }
-                resolved.headers.isNotEmpty() -> {
-                    retriever.setDataSource(url, resolved.headers)
-                }
                 else -> {
-                    retriever.setDataSource(url)
+                    val reqHeaders = HashMap(resolved.headers)
+                    if (!reqHeaders.keys.any { it.equals("User-Agent", true) }) {
+                        reqHeaders["User-Agent"] = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    }
+                    retriever.setDataSource(url, reqHeaders)
                 }
             }
 
-            // Prefer frame at 5 seconds, fallback to 1s, then 0s
-            val targetUs = 5_000_000L
+            // OPTION_CLOSEST_SYNC at 1s / 0s decodes the initial sync frame from the buffer,
+            // avoiding extra network Range seek requests.
             val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                retriever.getScaledFrameAtTime(targetUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 202)
-                    ?: retriever.getScaledFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 202)
-                    ?: retriever.getScaledFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 202)
+                retriever.getScaledFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180)
+                    ?: retriever.getScaledFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180)
+                    ?: retriever.getScaledFrameAtTime(3_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180)
             } else {
-                retriever.getFrameAtTime(targetUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.let { raw ->
-                    val w = 360
+                (retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC))?.let { raw ->
+                    val w = 320
                     val h = (w.toFloat() / raw.width * raw.height).toInt().coerceAtLeast(1)
                     val scaled = Bitmap.createScaledBitmap(raw, w, h, true)
                     if (scaled != raw) raw.recycle()
@@ -123,9 +132,10 @@ object VideoThumbnails {
             val tmp = File(dest.parentFile, "${dest.name}.tmp")
             try {
                 FileOutputStream(tmp).use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
                 }
                 tmp.renameTo(dest)
+                memoryCache.put("$sourceId:${file.id}", dest)
                 dest
             } finally {
                 bitmap.recycle()

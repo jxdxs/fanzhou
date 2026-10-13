@@ -50,11 +50,18 @@ class QuarkDrive(source: Source) : CloudDrive(source) {
                 val durSec = f.num("duration").takeIf { it > 0 }
                     ?: f["video_max_resolution"].obj()?.num("duration")?.takeIf { it > 0 }
                     ?: f["video_info"].obj()?.num("duration") ?: 0.0
+                val rawThumb = f.str("thumbnail") ?: f.str("big_thumbnail") ?: f["video_info"].obj()?.str("thumbnail") ?: f.str("snapshot")
+                val thumbUrl = when {
+                    rawThumb.isNullOrEmpty() -> null
+                    rawThumb.startsWith("http://") || rawThumb.startsWith("https://") -> rawThumb
+                    rawThumb.startsWith("//") -> "https:$rawThumb"
+                    else -> null
+                }
                 out.add(
                     CloudFile(
                         f.str("fid") ?: "", android.text.Html.fromHtml(f.str("file_name") ?: "", 0).toString(), !isFile, f.long("size"),
                         modified = epochMs(listOf("updated_at", "l_updated_at", "created_at").map { k -> f.long(k) }.firstOrNull { it > 0 } ?: 0),
-                        thumb = (f.str("thumbnail") ?: f.str("big_thumbnail"))?.takeIf { it.startsWith("http") },
+                        thumb = thumbUrl,
                         duration = (durSec * 1000).toLong(),
                     )
                 )

@@ -132,11 +132,18 @@ class AliyunDrive(source: Source) : CloudDrive(source) {
                 val id = f.str("file_id") ?: return@forEach
                 val meta = f["video_media_metadata"].obj() ?: f["video_preview_metadata"].obj()
                 val dur = meta?.str("duration")?.toDoubleOrNull() ?: 0.0
+                val rawThumb = f.str("thumbnail") ?: meta?.str("thumbnail") ?: f["video_preview_metadata"].obj()?.str("thumbnail") ?: f["video_media_metadata"].obj()?.str("thumbnail")
+                val thumbUrl = when {
+                    rawThumb.isNullOrEmpty() -> null
+                    rawThumb.startsWith("http://") || rawThumb.startsWith("https://") -> rawThumb
+                    rawThumb.startsWith("//") -> "https:$rawThumb"
+                    else -> null
+                }
                 out.add(
                     CloudFile(
                         if (isDir) "$driveId/$id" else id, f.str("name") ?: "", isDir, f.long("size"), driveId,
                         modified = parseIsoTime(f.str("updated_at") ?: f.str("created_at")),
-                        thumb = f.str("thumbnail")?.takeIf { it.startsWith("http") },
+                        thumb = thumbUrl,
                         duration = (dur * 1000).toLong(),
                     )
                 )

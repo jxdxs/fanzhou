@@ -263,6 +263,18 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
         if (e != null && entries != null) android.widget.Toast.makeText(context, "刷新失败：$e", android.widget.Toast.LENGTH_SHORT).show()
     }
 
+    LaunchedEffect(entries) {
+        val list = entries ?: return@LaunchedEffect
+        val vids = list.filter { it.isVideo && it.thumb == null }
+        if (vids.isNotEmpty()) {
+            vids.forEach { f ->
+                launch {
+                    VideoThumbnails.loadOrExtract(context, sid, f)
+                }
+            }
+        }
+    }
+
     val all = entries ?: emptyList()
     val shown = remember(all, sortKey, sortDesc, foldersFirst, videosOnly, query) {
         val q = query.trim()
