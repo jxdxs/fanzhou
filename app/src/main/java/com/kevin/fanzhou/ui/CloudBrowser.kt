@@ -471,16 +471,28 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     }
 
     sheetFile?.let { f ->
-        ModalBottomSheet(onDismissRequest = { sheetFile = null }, containerColor = Surface1) {
-            Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                ThumbWithProgress(f, headers, store.position(posKey(sid, f.id)), Modifier.width(96.dp), 22)
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { sheetFile = null },
+            sheetState = sheetState,
+            containerColor = Surface1,
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+            },
+        ) {
+            Row(
+                Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ThumbWithProgress(f, headers, store.position(posKey(sid, f.id)), Modifier.width(68.dp), 18)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    Text(metaLine(f), fontSize = 12.sp, color = TextDim, maxLines = 1)
+                    Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    val m = metaLine(f)
+                    if (m.isNotEmpty()) Text(m, fontSize = 11.sp, color = TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
             val pos = store.position(posKey(sid, f.id))
             if (f.isDir) SheetRow(null, R.drawable.ic_folder, "打开") { sheetFile = null; open(f) }
             if (f.isVideo) {
@@ -499,9 +511,9 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
             SheetRow(Icons.Filled.Info, null, "文件信息") { sheetFile = null; infoFile = f }
             if (!f.id.endsWith("/root")) {
                 SheetRow(Icons.Filled.Edit, null, "重命名") { sheetFile = null; renameFile = f }
-                SheetRow(Icons.Filled.Delete, null, "删除") { sheetFile = null; deleteFile = f }
+                SheetRow(Icons.Filled.Delete, null, "删除", tint = MaterialTheme.colorScheme.error, textColor = MaterialTheme.colorScheme.error) { sheetFile = null; deleteFile = f }
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(14.dp))
         }
     }
 
@@ -557,14 +569,25 @@ private fun MenuRow(text: String, checked: Boolean, icon: Int? = null, onClick: 
 }
 
 @Composable
-private fun SheetRow(vector: ImageVector?, res: Int?, text: String, onClick: () -> Unit) {
+private fun SheetRow(
+    vector: ImageVector?,
+    res: Int?,
+    text: String,
+    tint: Color = TextDim,
+    textColor: Color = Color.Unspecified,
+    onClick: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (vector != null) Icon(vector, null, tint = TextDim) else if (res != null) Icon(painterResource(res), null, tint = TextDim)
-        Spacer(Modifier.width(20.dp))
-        Text(text, fontSize = 15.sp)
+        if (vector != null) Icon(vector, null, tint = tint, modifier = Modifier.size(19.dp))
+        else if (res != null) Icon(painterResource(res), null, tint = tint, modifier = Modifier.size(19.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(text, fontSize = 14.sp, color = textColor)
     }
 }
 
