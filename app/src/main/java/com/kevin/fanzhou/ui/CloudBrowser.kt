@@ -42,8 +42,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -471,50 +474,19 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     }
 
     sheetFile?.let { f ->
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            onDismissRequest = { sheetFile = null },
-            sheetState = sheetState,
-            containerColor = Surface1,
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-            },
-        ) {
-            Row(
-                Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ThumbWithProgress(f, headers, store.position(posKey(sid, f.id)), Modifier.width(68.dp), 18)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    val m = metaLine(f)
-                    if (m.isNotEmpty()) Text(m, fontSize = 11.sp, color = TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            Spacer(Modifier.height(4.dp))
-            val pos = store.position(posKey(sid, f.id))
-            if (f.isDir) SheetRow(null, R.drawable.ic_folder, "打开") { sheetFile = null; open(f) }
-            if (f.isVideo) {
-                SheetRow(Icons.Filled.PlayArrow, null, if (pos > 0) "继续播放（${fmtMs(pos)}）" else "播放") { sheetFile = null; play(f) }
-                SheetRow(null, R.drawable.ic_core, "用 MPV 播放") { sheetFile = null; play(f, mpv = true) }
-                SheetRow(null, R.drawable.ic_replay, "从头播放") { sheetFile = null; play(f, fromStart = true) }
-            }
-            if (f.isDir || f.isVideo) {
-                val favved = store.isCloudFav(sid, f.id)
-                SheetRow(Icons.Filled.Star, null, if (favved) "取消收藏" else "收藏") { sheetFile = null; toggleFav(f) }
-            }
-            SheetRow(null, R.drawable.ic_copy, "复制文件名") {
-                clipboard.setText(AnnotatedString(f.name)); sheetFile = null
-                android.widget.Toast.makeText(context, "已复制文件名", android.widget.Toast.LENGTH_SHORT).show()
-            }
-            SheetRow(Icons.Filled.Info, null, "文件信息") { sheetFile = null; infoFile = f }
-            if (!f.id.endsWith("/root")) {
-                SheetRow(Icons.Filled.Edit, null, "重命名") { sheetFile = null; renameFile = f }
-                SheetRow(Icons.Filled.Delete, null, "删除", tint = MaterialTheme.colorScheme.error, textColor = MaterialTheme.colorScheme.error) { sheetFile = null; deleteFile = f }
-            }
-            Spacer(Modifier.height(14.dp))
-        }
+        CloudItemMenuDialog(
+            f = f,
+            headers = headers,
+            sid = sid,
+            store = store,
+            onDismiss = { sheetFile = null },
+            onOpen = { open(f) },
+            onPlay = { mpv, fromStart -> play(f, mpv = mpv, fromStart = fromStart) },
+            onToggleFav = { toggleFav(f) },
+            onRename = { renameFile = f },
+            onDelete = { deleteFile = f },
+            onInfo = { infoFile = f },
+        )
     }
 
     renameFile?.let { f ->
@@ -581,13 +553,137 @@ private fun SheetRow(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 7.dp),
+            .padding(horizontal = 18.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (vector != null) Icon(vector, null, tint = tint, modifier = Modifier.size(19.dp))
         else if (res != null) Icon(painterResource(res), null, tint = tint, modifier = Modifier.size(19.dp))
         Spacer(Modifier.width(14.dp))
-        Text(text, fontSize = 14.sp, color = textColor)
+        Text(text, fontSize = 14.sp, color = textColor, maxLines = 1, softWrap = false)
+    }
+}
+
+@Composable
+private fun CloudItemMenuDialog(
+    f: CloudFile,
+    headers: Map<String, String>,
+    sid: String,
+    store: com.kevin.fanzhou.data.Store,
+    onDismiss: () -> Unit,
+    onOpen: () -> Unit,
+    onPlay: (Boolean, Boolean) -> Unit,
+    onToggleFav: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onInfo: () -> Unit,
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val pos = store.position(posKey(sid, f.id))
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Surface1,
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .padding(horizontal = 24.dp, vertical = 24.dp)
+                .wrapContentSize(),
+        ) {
+            Layout(
+                content = {
+                    // 0: Header (thumbnail + file name + meta)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ThumbWithProgress(f, headers, pos, Modifier.width(44.dp), 14)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                f.name,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            val m = metaLine(f)
+                            if (m.isNotEmpty()) {
+                                Text(
+                                    m,
+                                    fontSize = 11.sp,
+                                    color = TextDim,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                    // 1: Divider
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f), thickness = 0.8.dp)
+                    // 2: Menu items column (intrinsic max width)
+                    Column(
+                        modifier = Modifier
+                            .width(IntrinsicSize.Max)
+                            .widthIn(min = 160.dp)
+                            .padding(vertical = 4.dp),
+                    ) {
+                        if (f.isDir) SheetRow(null, R.drawable.ic_folder, "打开") { onDismiss(); onOpen() }
+                        if (f.isVideo) {
+                            SheetRow(Icons.Filled.PlayArrow, null, if (pos > 0) "继续播放（${fmtMs(pos)}）" else "播放") {
+                                onDismiss(); onPlay(false, false)
+                            }
+                            SheetRow(null, R.drawable.ic_core, "用 MPV 播放") { onDismiss(); onPlay(true, false) }
+                            SheetRow(null, R.drawable.ic_replay, "从头播放") { onDismiss(); onPlay(false, true) }
+                        }
+                        if (f.isDir || f.isVideo) {
+                            val favved = store.isCloudFav(sid, f.id)
+                            SheetRow(Icons.Filled.Star, null, if (favved) "取消收藏" else "收藏") {
+                                onDismiss(); onToggleFav()
+                            }
+                        }
+                        SheetRow(null, R.drawable.ic_copy, "复制文件名") {
+                            clipboard.setText(AnnotatedString(f.name))
+                            onDismiss()
+                            android.widget.Toast.makeText(context, "已复制文件名", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        SheetRow(Icons.Filled.Info, null, "文件信息") { onDismiss(); onInfo() }
+                        if (!f.id.endsWith("/root")) {
+                            SheetRow(Icons.Filled.Edit, null, "重命名") { onDismiss(); onRename() }
+                            SheetRow(
+                                Icons.Filled.Delete, null, "删除",
+                                tint = MaterialTheme.colorScheme.error,
+                                textColor = MaterialTheme.colorScheme.error,
+                            ) { onDismiss(); onDelete() }
+                        }
+                    }
+                }
+            ) { measurables, constraints ->
+                val headerMeasurable = measurables[0]
+                val dividerMeasurable = measurables[1]
+                val menuMeasurable = measurables[2]
+
+                val menuPlaceable = menuMeasurable.measure(constraints.copy(minWidth = 0))
+                val targetWidth = menuPlaceable.width.coerceIn(constraints.minWidth, constraints.maxWidth)
+
+                val exactConstraints = constraints.copy(minWidth = targetWidth, maxWidth = targetWidth)
+                val headerPlaceable = headerMeasurable.measure(exactConstraints)
+                val dividerPlaceable = dividerMeasurable.measure(exactConstraints)
+
+                val totalHeight = headerPlaceable.height + dividerPlaceable.height + menuPlaceable.height
+
+                layout(targetWidth, totalHeight) {
+                    var y = 0
+                    headerPlaceable.placeRelative(0, y)
+                    y += headerPlaceable.height
+                    dividerPlaceable.placeRelative(0, y)
+                    y += dividerPlaceable.height
+                    menuPlaceable.placeRelative(0, y)
+                }
+            }
+        }
     }
 }
 

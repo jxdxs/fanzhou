@@ -9,6 +9,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.media.MediaMetadata
@@ -84,6 +85,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private lateinit var posView: TextView
     private lateinit var durView: TextView
     private lateinit var playPause: ImageButton
+    private lateinit var rotateBtn: ImageButton
     private lateinit var touch: View
     private lateinit var audio: AudioManager
     private val handler = Handler(Looper.getMainLooper())
@@ -173,6 +175,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
         PlayerOrientation.apply(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
@@ -564,6 +567,17 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
+    private fun updateRotateBtnPosition() {
+        if (!::rotateBtn.isInitialized) return
+        val shortEdge = minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+        val bottomMargin = (shortEdge - dp(44)) / 2
+        val lp = rotateBtn.layoutParams as? FrameLayout.LayoutParams ?: FrameLayout.LayoutParams(dp(44), dp(44))
+        lp.gravity = Gravity.START or Gravity.BOTTOM
+        lp.marginStart = dp(16)
+        lp.bottomMargin = bottomMargin
+        rotateBtn.layoutParams = lp
+    }
+
     private fun bindViews() {
         surface = findViewById(R.id.mpv_surface)
         controls = findViewById(R.id.mpv_controls)
@@ -574,6 +588,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         posView = findViewById(R.id.mpv_position)
         durView = findViewById(R.id.mpv_duration)
         playPause = findViewById(R.id.mpv_play_pause)
+        rotateBtn = findViewById(R.id.mpv_rotate)
+        updateRotateBtnPosition()
         touch = findViewById(R.id.mpv_touch)
         hintView.background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0x99000000.toInt()) }
         topBar.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xAA000000.toInt(), 0x00000000))
@@ -606,7 +622,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             topBar.addView(iconBtn(R.drawable.ic_pip, "画中画") { enterPip() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4) })
         }
 
-        findViewById<View>(R.id.mpv_rotate)?.setOnClickListener {
+        rotateBtn.setOnClickListener {
             val label = PlayerOrientation.toggle(this)
             showHint(label)
             bumpControls()
@@ -1301,11 +1317,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val builder = PictureInPictureParams.Builder()
             .setAspectRatio(clamped)
 
-        val sourceRect = if (::surface.isInitialized && surface.width > 0 && surface.height > 0) {
-            val loc = IntArray(2)
-            surface.getLocationInWindow(loc)
-            val sw = surface.width
-            val sh = surface.height
+        val sourceRect = Rect()
+        if (::surface.isInitialized && surface.getGlobalVisibleRect(sourceRect) && sourceRect.width() > 0 && sourceRect.height() > 0) {
+            val sw = sourceRect.width()
+            val sh = sourceRect.height()
             if (w > 0 && h > 0) {
                 val videoAspect = w.toFloat() / h
                 val surfaceAspect = sw.toFloat() / sh
@@ -1314,23 +1329,18 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 } else {
                     (sh * videoAspect).toInt().coerceAtLeast(1) to sh
                 }
-                val left = loc[0] + (sw - rw) / 2
-                val top = loc[1] + (sh - rh) / 2
-                Rect(left, top, left + rw, top + rh)
+                val left = sourceRect.left + (sw - rw) / 2
+                val top = sourceRect.top + (sh - rh) / 2
+                builder.setSourceRectHint(Rect(left, top, left + rw, top + rh))
             } else {
-                Rect(loc[0], loc[1], loc[0] + sw, loc[1] + sh)
+                builder.setSourceRectHint(sourceRect)
             }
-        } else null
-
-        if (sourceRect != null && sourceRect.width() > 0 && sourceRect.height() > 0) {
-            builder.setSourceRectHint(sourceRect)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setSeamlessResizeEnabled(true)
         }
 
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         isEnteringPip = true
 
         val entered = try {
@@ -1342,7 +1352,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (!entered) {
             isEnteringPip = false
             controls.visibility = View.VISIBLE
-            PlayerOrientation.apply(this)
         }
     }
 
@@ -1362,6 +1371,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (isEnteringPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
             return
         }
+        updateRotateBtnPosition()
         PlayerOrientation.compactButtons(this, window.decorView, mpvTransportIds); stretchMpvRow()
         updateSpeedLabel()
         hideSystemBars()
@@ -1377,6 +1387,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         } else {
             PlayerOrientation.apply(this)
             hideSystemBars()
+            updateRotateBtnPosition()
             PlayerOrientation.compactButtons(this, window.decorView, mpvTransportIds)
             stretchMpvRow()
         }

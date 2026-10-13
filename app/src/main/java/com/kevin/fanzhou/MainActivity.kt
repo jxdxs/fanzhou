@@ -27,6 +27,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.parseColor("#0E1116")))
         pendingRoute = intent?.getStringExtra("route")
         enableEdgeToEdge()
         setContent { FanzhouTheme { AppRoot(pendingRoute) } }

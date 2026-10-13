@@ -191,6 +191,7 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.BLACK))
         PlayerOrientation.apply(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
@@ -234,10 +235,21 @@ class PlayerActivity : ComponentActivity() {
 
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
+    private fun updateRotateBtnPosition() {
+        if (!::rotateBtn.isInitialized) return
+        val shortEdge = minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+        val bottomMargin = (shortEdge - dp(44)) / 2
+        val lp = rotateBtn.layoutParams as? FrameLayout.LayoutParams ?: FrameLayout.LayoutParams(dp(44), dp(44))
+        lp.gravity = Gravity.START or Gravity.BOTTOM
+        lp.marginStart = dp(16)
+        lp.bottomMargin = bottomMargin
+        rotateBtn.layoutParams = lp
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun buildUi() {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        playerView = PlayerView(this).apply {
+        playerView = (layoutInflater.inflate(R.layout.fz_player_view, root, false) as PlayerView).apply {
             useController = true
             controllerShowTimeoutMs = 10000
             setShowNextButton(true)
@@ -270,8 +282,11 @@ class PlayerActivity : ComponentActivity() {
                 playerView.showController()
             }
         }
-        root.addView(rotateBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.START or Gravity.CENTER_VERTICAL).apply {
+        val shortEdge = minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+        val bottomMargin = (shortEdge - dp(44)) / 2
+        root.addView(rotateBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.START or Gravity.BOTTOM).apply {
             marginStart = dp(16)
+            this.bottomMargin = bottomMargin
         })
 
         topBar = LinearLayout(this).apply {
@@ -1432,32 +1447,9 @@ class PlayerActivity : ComponentActivity() {
             .setAspectRatio(clamped)
 
         val contentFrame = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
-        val sourceRect = if (contentFrame != null && contentFrame.width > 0 && contentFrame.height > 0) {
-            val loc = IntArray(2)
-            contentFrame.getLocationInWindow(loc)
-            Rect(loc[0], loc[1], loc[0] + contentFrame.width, loc[1] + contentFrame.height)
-        } else if (playerView.width > 0 && playerView.height > 0) {
-            val loc = IntArray(2)
-            playerView.getLocationInWindow(loc)
-            val pw = playerView.width
-            val ph = playerView.height
-            if (vw > 0 && vh > 0) {
-                val videoAspect = vw.toFloat() / vh
-                val viewAspect = pw.toFloat() / ph
-                val (w, h) = if (videoAspect > viewAspect) {
-                    pw to (pw / videoAspect).toInt().coerceAtLeast(1)
-                } else {
-                    (ph * videoAspect).toInt().coerceAtLeast(1) to ph
-                }
-                val left = loc[0] + (pw - w) / 2
-                val top = loc[1] + (ph - h) / 2
-                Rect(left, top, left + w, top + h)
-            } else {
-                Rect(loc[0], loc[1], loc[0] + pw, loc[1] + ph)
-            }
-        } else null
-
-        if (sourceRect != null && sourceRect.width() > 0 && sourceRect.height() > 0) {
+            ?: playerView.videoSurfaceView ?: playerView
+        val sourceRect = Rect()
+        if (contentFrame.getGlobalVisibleRect(sourceRect) && sourceRect.width() > 0 && sourceRect.height() > 0) {
             builder.setSourceRectHint(sourceRect)
         }
 
@@ -1465,7 +1457,6 @@ class PlayerActivity : ComponentActivity() {
             builder.setSeamlessResizeEnabled(true)
         }
 
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         isEnteringPip = true
 
         val entered = try {
@@ -1479,7 +1470,6 @@ class PlayerActivity : ComponentActivity() {
             playerView.useController = true
             topBar.visibility = View.VISIBLE
             rotateBtn.visibility = View.VISIBLE
-            PlayerOrientation.apply(this)
         }
     }
 
@@ -1577,6 +1567,7 @@ class PlayerActivity : ComponentActivity() {
         if (isEnteringPip || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
             return
         }
+        updateRotateBtnPosition()
         if (::playerView.isInitialized) fitExoBottomBar()
         updateSpeedLabel()
         hideSystemBars()
@@ -1594,6 +1585,7 @@ class PlayerActivity : ComponentActivity() {
         } else {
             PlayerOrientation.apply(this)
             hideSystemBars()
+            updateRotateBtnPosition()
             if (::playerView.isInitialized) fitExoBottomBar()
         }
     }
