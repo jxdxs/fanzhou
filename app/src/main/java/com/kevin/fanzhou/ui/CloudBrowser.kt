@@ -232,6 +232,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     var renameFile by remember { mutableStateOf<CloudFile?>(null) }
     var deleteFile by remember { mutableStateOf<CloudFile?>(null) }
     var deleteRecent by remember { mutableStateOf<CloudRecent?>(null) }
+    var deleteFav by remember { mutableStateOf<CloudFav?>(null) }
     val opScope = rememberCoroutineScope()
     fun fileOp(done: String, op: suspend () -> Unit) {
         opScope.launch {
@@ -431,7 +432,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                     onRecentRemove = { deleteRecent = it },
                     onFavVideo = ::playFav,
                     onFavDir = { fav -> nav.navigate(Routes.cloud(sid, fav.id, fav.name, fav.path)) },
-                    onFavRemove = ::removeFav,
+                    onFavRemove = { deleteFav = it },
                 )
             }) else null
             when {
@@ -559,6 +560,28 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
             },
             dismissButton = {
                 TextButton(onClick = { deleteRecent = null }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+    deleteFav?.let { fav ->
+        val itemType = if (fav.isDir) "收藏目录" else "收藏视频"
+        val displayName = if (fav.isDir) fav.name else fav.name.substringBeforeLast('.')
+        AlertDialog(
+            onDismissRequest = { deleteFav = null },
+            title = { Text("取消$itemType？") },
+            text = { Text("确定要取消收藏「$displayName」吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteFav = null
+                    removeFav(fav)
+                }) {
+                    Text("取消收藏", color = Color(0xFFE5484D))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteFav = null }) {
                     Text("取消")
                 }
             },

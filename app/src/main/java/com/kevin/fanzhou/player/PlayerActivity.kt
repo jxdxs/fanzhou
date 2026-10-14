@@ -331,7 +331,7 @@ class PlayerActivity : ComponentActivity() {
         fitExoBottomBar()
         extendSpeedMenu()
         playerView.findViewById<TextView>(R.id.fz_speed)?.setOnClickListener { showSpeedPicker(it) }
-        playerView.findViewById<View>(R.id.fz_audio)?.setOnClickListener { showAudioTrackMenu() }
+        playerView.findViewById<View>(R.id.fz_audio)?.setOnClickListener { v -> showAudioTrackMenu(v) }
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
         playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { v -> showPlayerSettingsMenu(v) }
         // The subtitle button opens our own menu (with 在线搜索字幕), not Media3's stock dialog.
@@ -973,8 +973,8 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    /** Bottom-bar 音轨 button: audio tracks used to be only inside the settings (gear) dialog. */
-    private fun showAudioTrackMenu() {
+    /** Bottom-bar 音轨 button: audio tracks menu using compact AudioTrackPopup. */
+    private fun showAudioTrackMenu(anchor: View) {
         if (!::player.isInitialized) return
         val choices = ArrayList<Pair<Tracks.Group, Int>>()
         for (g in player.currentTracks.groups) {
@@ -984,18 +984,14 @@ class PlayerActivity : ComponentActivity() {
         if (choices.isEmpty()) { toast("没有可选音轨"); return }
         val labels = choices.map { (g, i) -> audioTrackLabel(g.getTrackFormat(i)) }
         val sel = choices.indexOfFirst { (g, i) -> g.isTrackSelected(i) }
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("音轨")
-            .setSingleChoiceItems(labels.toTypedArray(), sel) { d, which ->
-                d.dismiss()
-                val (g, i) = choices[which]
-                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-                    .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
-                    .build()
-                showHint("音轨：${labels[which]}")
-            }
-            .show()
+        AudioTrackPopup.show(anchor, labels, sel) { which ->
+            val (g, i) = choices[which]
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
+                .build()
+            showHint("音轨：${labels[which]}")
+        }
     }
 
     private fun audioTrackLabel(f: androidx.media3.common.Format): String {

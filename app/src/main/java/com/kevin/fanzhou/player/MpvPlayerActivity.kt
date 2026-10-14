@@ -1097,15 +1097,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (list.isEmpty()) { toast("没有可选音轨"); return }
         val labels = list.map { it.label }
         val sel = list.indexOfFirst { it.selected }
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle(if (isSub) "字幕" else "音轨")
-            .setSingleChoiceItems(labels.toTypedArray(), sel) { d, which ->
-                d.dismiss()
-                val prop = if (isSub) "sid" else "aid"
-                if (isSub && which == 0) mpv?.setPropertyString(prop, "no")
-                else mpv?.setPropertyString(prop, list[if (isSub) which - 1 else which].id.toString())
-            }
-            .show()
+        AudioTrackPopup.show(anchor, labels, sel) { which ->
+            mpv?.setPropertyString("aid", list[which].id.toString())
+            showHint("音轨：${labels[which]}")
+        }
     }
 
     private fun applySubtitleScale() = applySubtitleStyle()
