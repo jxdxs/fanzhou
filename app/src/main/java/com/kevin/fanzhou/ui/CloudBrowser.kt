@@ -226,7 +226,6 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var sortMenu by remember { mutableStateOf(false) }
-    var viewMenu by remember { mutableStateOf(false) }
     var sheetFile by remember { mutableStateOf<CloudFile?>(null) }
     var infoFile by remember { mutableStateOf<CloudFile?>(null) }
     var renameFile by remember { mutableStateOf<CloudFile?>(null) }
@@ -367,7 +366,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     fun playFav(fav: CloudFav) = playRecent(
         CloudRecent(fav.id, fav.name, fav.extra, fav.size, fav.thumb, fav.duration, fav.dirId, fav.dirName, System.currentTimeMillis())
     )
-    fun setView(v: String) { view = v; store.setCloudView(sid, v); viewMenu = false }
+    fun setView(v: String) { view = v; store.setCloudView(sid, v) }
 
     Scaffold(topBar = {
         Column(Modifier.background(Bg)) {
@@ -402,15 +401,15 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                             MenuRow("只显示视频", videosOnly) { videosOnly = !videosOnly; store.cloudVideosOnly = videosOnly }
                         }
                     }
-                    Box {
-                        IconButton(onClick = { viewMenu = true }) {
-                            Icon(painterResource(when (view) { VIEW_GRID -> R.drawable.ic_grid; VIEW_POSTER -> R.drawable.ic_poster; else -> R.drawable.ic_view_list }), "视图")
-                        }
-                        DropdownMenu(viewMenu, { viewMenu = false }) {
-                            MenuRow("列表", view == VIEW_LIST, R.drawable.ic_view_list) { setView(VIEW_LIST) }
-                            MenuRow("网格", view == VIEW_GRID, R.drawable.ic_grid) { setView(VIEW_GRID) }
-                            if (hasTmdb) MenuRow("海报墙", view == VIEW_POSTER, R.drawable.ic_poster) { setView(VIEW_POSTER) }
-                        }
+                    IconButton(onClick = {
+                        val next = if (view == VIEW_GRID) VIEW_LIST else VIEW_GRID
+                        setView(next)
+                    }) {
+                        val isGrid = view == VIEW_GRID
+                        Icon(
+                            painter = painterResource(if (isGrid) R.drawable.ic_view_list else R.drawable.ic_grid),
+                            contentDescription = if (isGrid) "切换为列表" else "切换为网格"
+                        )
                     }
                     IconButton(onClick = { refreshing = true; reload++ }) { Icon(Icons.Filled.Refresh, "刷新") }
                 },

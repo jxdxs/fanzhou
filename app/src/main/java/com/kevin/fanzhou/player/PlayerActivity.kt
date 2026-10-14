@@ -300,7 +300,7 @@ class PlayerActivity : ComponentActivity() {
             setPadding(dp(8), dp(8), dp(8), dp(8))
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xAA000000.toInt(), 0x00000000))
         }
-        fun iconBtn(res: Int, desc: String, onClick: () -> Unit) = ImageButton(this).apply {
+        fun iconBtn(res: Int, desc: String, onClick: (View) -> Unit) = ImageButton(this).apply {
             setImageResource(res)
             contentDescription = desc
             val tv = android.util.TypedValue()
@@ -309,7 +309,7 @@ class PlayerActivity : ComponentActivity() {
             setColorFilter(Color.WHITE)
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            setOnClickListener { onClick() }
+            setOnClickListener { onClick(it) }
         }
         topBar.addView(iconBtn(R.drawable.ic_back, "返回") { finish() }, LinearLayout.LayoutParams(dp(44), dp(44)))
         titleView = TextView(this).apply {
@@ -322,7 +322,7 @@ class PlayerActivity : ComponentActivity() {
         }
         topBar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
         topBar.addView(iconBtn(R.drawable.ic_core, "切换到 MPV 内核") { switchToMpv(null, forced = true); showHint("MPV 内核") }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
-        topBar.addView(iconBtn(R.drawable.ic_hd, "画质") { showQualityMenu() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
+        topBar.addView(iconBtn(R.drawable.ic_hd, "画质") { v -> showQualityMenu(v) }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_aspect, "画面比例") { cycleResize() }, LinearLayout.LayoutParams(dp(44), dp(44)))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             topBar.addView(iconBtn(R.drawable.ic_pip, "画中画") { enterPip() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4) })
@@ -334,17 +334,20 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_audio)?.setOnClickListener { v -> showAudioTrackMenu(v) }
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
         playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { v -> showPlayerSettingsMenu(v) }
-        // The subtitle button opens our own menu (with 在线搜索字幕), not Media3's stock dialog.
         playerView.findViewById<View>(R.id.fz_subtitle)?.setOnClickListener { v -> showTextTrackMenu(v) }
         updateSpeedLabel()
 
-        playerView.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.addListener(object : androidx.media3.ui.TimeBar.OnScrubListener {
-            override fun onScrubStart(timeBar: androidx.media3.ui.TimeBar, position: Long) {}
-            override fun onScrubMove(timeBar: androidx.media3.ui.TimeBar, position: Long) {}
-            override fun onScrubStop(timeBar: androidx.media3.ui.TimeBar, position: Long, canceled: Boolean) {
-                if (!canceled) hideUndoCapsule()
-            }
-        })
+        val bumpController = View.OnClickListener {
+            playerView.showController()
+        }
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)?.setOnClickListener(bumpController)
+        playerView.findViewById<View>(R.id.fz_time)?.setOnClickListener(bumpController)
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_basic_controls)?.setOnClickListener(bumpController)
+        playerView.findViewById<View>(R.id.fz_progress_row)?.setOnClickListener(bumpController)
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_position)?.setOnClickListener(bumpController)
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_duration)?.setOnClickListener(bumpController)
+        topBar.setOnClickListener(bumpController)
+
 
         hintView = TextView(this).apply {
             setTextColor(Color.WHITE)
@@ -395,49 +398,6 @@ class PlayerActivity : ComponentActivity() {
         bubbleLp.bottomMargin = dp(84)
         root.addView(subBubbleView, bubbleLp)
 
-        undoCapsuleView = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply {
-                setColor(0xE6212121.toInt())
-                cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), 0x55FFFFFF.toInt())
-            }
-            setPadding(dp(12), dp(6), dp(10), dp(6))
-            elevation = dp(6).toFloat()
-            visibility = View.GONE
-
-            val tv = TextView(this@PlayerActivity).apply {
-                text = "⏪ 已跳过片头 · 撤销"
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-            }
-            addView(tv)
-
-            val closeBtn = TextView(this@PlayerActivity).apply {
-                text = "✕"
-                setTextColor(0xAAFFFFFF.toInt())
-                textSize = 14f
-                setPadding(dp(8), 0, dp(4), 0)
-                setOnClickListener { hideUndoCapsule() }
-            }
-            addView(closeBtn)
-
-            setOnClickListener {
-                val target = undoFromPosMs
-                hideUndoCapsule()
-                if (::player.isInitialized) {
-                    player.seekTo(target)
-                    showHint("已恢复片头播放")
-                }
-            }
-        }
-        val undoLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START)
-        undoLp.marginStart = dp(16)
-        undoLp.bottomMargin = dp(84)
-        root.addView(undoCapsuleView, undoLp)
-
         setContentView(root)
         attachGestures()
     }
@@ -464,6 +424,48 @@ class PlayerActivity : ComponentActivity() {
         showHint(resizeNames[resizeMode])
     }
 
+    private fun isTouchInControlArea(rawX: Int, rawY: Int): Boolean {
+        if (!playerView.isControllerFullyVisible) return false
+        // 1. Top bar
+        if (::topBar.isInitialized && topBar.visibility == View.VISIBLE) {
+            val rect = Rect()
+            topBar.getGlobalVisibleRect(rect)
+            if (rawY <= rect.bottom) return true
+        }
+        // 2. Rotate button
+        if (::rotateBtn.isInitialized && rotateBtn.visibility == View.VISIBLE) {
+            val rect = Rect()
+            rotateBtn.getGlobalVisibleRect(rect)
+            if (rect.contains(rawX, rawY)) return true
+        }
+        // 3. Subtitle bubble
+        subBubbleView?.let { bubble ->
+            if (bubble.visibility == View.VISIBLE) {
+                val rect = Rect()
+                bubble.getGlobalVisibleRect(rect)
+                if (rect.contains(rawX, rawY)) return true
+            }
+        }
+        // 4. Bottom bar area (progress row + bottom bar)
+        val progressRow = playerView.findViewById<View>(R.id.fz_progress_row)
+        val bottomBar = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)
+        var bottomTop = Int.MAX_VALUE
+        if (progressRow != null && progressRow.visibility == View.VISIBLE) {
+            val rect = Rect()
+            progressRow.getGlobalVisibleRect(rect)
+            if (rect.top > 0) bottomTop = minOf(bottomTop, rect.top)
+        }
+        if (bottomBar != null && bottomBar.visibility == View.VISIBLE) {
+            val rect = Rect()
+            bottomBar.getGlobalVisibleRect(rect)
+            if (rect.top > 0) bottomTop = minOf(bottomTop, rect.top)
+        }
+        if (bottomTop != Int.MAX_VALUE && rawY >= bottomTop) {
+            return true
+        }
+        return false
+    }
+
     // ---------------- Gestures ----------------
 
     private enum class Drag { NONE, SEEK, BRIGHTNESS, VOLUME }
@@ -479,14 +481,27 @@ class PlayerActivity : ComponentActivity() {
         var startVolume = 0
         val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val slop = dp(16)
+        var touchStartedInControls = false
 
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (playerView.isControllerFullyVisible) playerView.hideController() else playerView.showController()
+                if (playerView.isControllerFullyVisible) {
+                    if (isTouchInControlArea(e.rawX.toInt(), e.rawY.toInt())) {
+                        playerView.showController()
+                        return true
+                    }
+                    playerView.hideController()
+                } else {
+                    playerView.showController()
+                }
                 return true
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (playerView.isControllerFullyVisible && isTouchInControlArea(e.rawX.toInt(), e.rawY.toInt())) {
+                    playerView.showController()
+                    return true
+                }
                 val w = playerView.width
                 val step = Repo.store.seekStepSec * 1000L
                 when {
@@ -498,7 +513,7 @@ class PlayerActivity : ComponentActivity() {
             }
 
             override fun onLongPress(e: MotionEvent) {
-                if (drag != Drag.NONE || !player.isPlaying) return
+                if (drag != Drag.NONE || !player.isPlaying || touchStartedInControls) return
                 longPressSpeedActive = true
                 speedBeforeLongPress = player.playbackParameters.speed
                 player.playbackParameters = PlaybackParameters(2f)
@@ -507,6 +522,18 @@ class PlayerActivity : ComponentActivity() {
         })
 
         playerView.setOnTouchListener { _, ev ->
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                touchStartedInControls = isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt())
+                if (touchStartedInControls) {
+                    playerView.showController()
+                }
+            }
+            if (touchStartedInControls) {
+                if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    touchStartedInControls = false
+                }
+                return@setOnTouchListener true
+            }
             detector.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -553,7 +580,6 @@ class PlayerActivity : ComponentActivity() {
                     }
                     if (drag == Drag.SEEK) {
                         player.seekTo(targetPos)
-                        hideUndoCapsule()
                     }
                     drag = Drag.NONE
                     handler.postDelayed(hideHint, 400)
@@ -718,29 +744,6 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private var undoCapsuleView: View? = null
-    private var undoFromPosMs: Long = 0L
-
-    private val dismissUndoCapsule = Runnable {
-        undoCapsuleView?.animate()?.alpha(0f)?.setDuration(300)?.withEndAction {
-            undoCapsuleView?.visibility = View.GONE
-        }
-    }
-
-    private fun showUndoCapsule(fromPosMs: Long) {
-        val v = undoCapsuleView ?: return
-        undoFromPosMs = fromPosMs
-        handler.removeCallbacks(dismissUndoCapsule)
-        v.alpha = 0f
-        v.visibility = View.VISIBLE
-        v.animate().alpha(1f).setDuration(200).start()
-        handler.postDelayed(dismissUndoCapsule, 5000)
-    }
-
-    private fun hideUndoCapsule() {
-        handler.removeCallbacks(dismissUndoCapsule)
-        undoCapsuleView?.visibility = View.GONE
-    }
 
     private fun updateChapterMarkers() {
         val timeBar = playerView.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress) ?: return
@@ -797,9 +800,6 @@ class PlayerActivity : ComponentActivity() {
                 player.play()
             },
             showHint = { showHint(it) },
-            onIntroSkipped = { fromPos, _ ->
-                showUndoCapsule(fromPos)
-            },
         )
     }
 
@@ -810,42 +810,13 @@ class PlayerActivity : ComponentActivity() {
         loudnessEnhancer = AudioBoost.applyExo(loudnessEnhancer, player.audioSessionId)
     }
 
-    private fun showAudioEnhanceDialog() {
-        val boostValues = listOf(1.0f, 1.25f, 1.5f, 2.0f)
-        val boostLabels = listOf("100% (标准)", "125%", "150%", "200% (翻倍)")
-        val currentBoost = Repo.store.volumeBoost
-        val voice = Repo.store.voiceEnhance
-
-        val items = arrayOf(
-            "夜间人声对白增强: " + if (voice) "【开启】" else "【关闭】",
-            "音量软放大: " + (boostLabels.getOrNull(boostValues.indexOfFirst { kotlin.math.abs(it - currentBoost) < 0.05f }) ?: "100%")
+    private fun showAudioEnhanceDialog(anchor: View? = null) {
+        val targetAnchor = anchor ?: playerView.findViewById(androidx.media3.ui.R.id.exo_settings) ?: topBar
+        AudioEnhancePopup.show(
+            anchor = targetAnchor,
+            onChanged = { applyAudioBoost() },
+            showHint = { showHint(it) }
         )
-
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("音频增强与人声")
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> {
-                        val newVal = !Repo.store.voiceEnhance
-                        Repo.store.voiceEnhance = newVal
-                        applyAudioBoost()
-                        showHint("人声增强：" + if (newVal) "开启" else "关闭")
-                    }
-                    1 -> {
-                        val sel = boostValues.indexOfFirst { kotlin.math.abs(it - Repo.store.volumeBoost) < 0.05f }.coerceAtLeast(0)
-                        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                            .setTitle("音量软放大")
-                            .setSingleChoiceItems(boostLabels.toTypedArray(), sel) { d, i ->
-                                Repo.store.volumeBoost = boostValues[i]
-                                applyAudioBoost()
-                                showHint("音量软放大：${boostLabels[i]}")
-                                d.dismiss()
-                            }
-                            .show()
-                    }
-                }
-            }
-            .show()
     }
 
     private var subBubbleView: View? = null
@@ -1033,7 +1004,7 @@ class PlayerActivity : ComponentActivity() {
         }
         items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
-        items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog() }
+        items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog(anchor) }
         if (!PlayerOrientation.isPortrait(this)) {
             items += IconMenu.Item(R.drawable.ic_shuffle, "随机", active = player.shuffleModeEnabled) {
                 player.shuffleModeEnabled = !player.shuffleModeEnabled
@@ -1066,9 +1037,6 @@ class PlayerActivity : ComponentActivity() {
             onSeek = { player.seekTo(it) },
             showHint = { showHint(it) },
             toast = { toast(it) },
-            onIntroSkipped = { fromPos, _ ->
-                showUndoCapsule(fromPos)
-            },
         )
     }
 
@@ -1614,7 +1582,6 @@ class PlayerActivity : ComponentActivity() {
             val start = queue[newIndex].startMs
             if (start > 0 && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) player.seekTo(start)
             skipController.onIndexChanged(newIndex, start)
-            hideUndoCapsule()
             updateChapterMarkers()
             smartSubPromptedIndex = -1
             hideSmartSubBubble()
@@ -1758,7 +1725,7 @@ class PlayerActivity : ComponentActivity() {
 
     // ---------------- Quality ----------------
 
-    private fun showQualityMenu() {
+    private fun showQualityMenu(anchor: View? = null) {
         val idx = currentIndex
         val p = queue.getOrNull(idx) ?: return
         val orig = originals[idx] ?: p
@@ -1777,7 +1744,7 @@ class PlayerActivity : ComponentActivity() {
                 val opts = listOf<Pair<String, (() -> PlayItem)>>("原画" to { orig }) + presets.map { (label, br, w) ->
                     label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap(), mime = null) }
                 }
-                pickQuality(idx, opts)
+                pickQuality(idx, opts, anchor)
             }
             cf != null -> {
                 val sid = orig.sourceId ?: return
@@ -1791,40 +1758,37 @@ class PlayerActivity : ComponentActivity() {
                         label to { orig.copy(url = r.url, headers = r.headers, mime = r.mime) }
                     }
                     if (opts.size == 1) toast("网盘暂时没有这个视频的转码版本，只有原画")
-                    pickQuality(idx, opts)
+                    pickQuality(idx, opts, anchor)
                 }
             }
             else -> toast("该来源只有原画")
         }
     }
 
-    private fun pickQuality(idx: Int, opts: List<Pair<String, (() -> PlayItem)>>) {
+    private fun pickQuality(idx: Int, opts: List<Pair<String, (() -> PlayItem)>>, anchor: View? = null) {
         if (opts.size <= 1) return
         val cur = qualityLabel[idx] ?: "原画"
         val checked = opts.indexOfFirst { it.first == cur }
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("画质")
-            .setSingleChoiceItems(opts.map { it.first }.toTypedArray(), checked) { d, which ->
-                d.dismiss()
-                val (label, make) = opts[which]
-                if (label == cur || idx != currentIndex) return@setSingleChoiceItems
-                val pos = player.currentPosition
-                val item = make().copy(startMs = pos)
-                qualityLabel[idx] = label
-                cloudLadderStep.remove(idx)
-                // Remember the manual pick for this cloud folder; later episodes start at it.
-                (originals[idx] ?: queue.getOrNull(idx))?.let { o ->
-                    val key = o.cloudFolderKey
-                    if (key != null && o.cloudFile != null) {
-                        folderQualityApplied.add(idx)
-                        Repo.store.setQualityForFolder(key, if (label == "原画") null else label)
-                    }
+        val targetAnchor = anchor ?: topBar
+        QualityPopup.show(targetAnchor, opts.map { it.first }, checked) { which ->
+            val (label, make) = opts[which]
+            if (label == cur || idx != currentIndex) return@show
+            val pos = player.currentPosition
+            val item = make().copy(startMs = pos)
+            qualityLabel[idx] = label
+            cloudLadderStep.remove(idx)
+            // Remember the manual pick for this cloud folder; later episodes start at it.
+            (originals[idx] ?: queue.getOrNull(idx))?.let { o ->
+                val key = o.cloudFolderKey
+                if (key != null && o.cloudFile != null) {
+                    folderQualityApplied.add(idx)
+                    Repo.store.setQualityForFolder(key, if (label == "原画") null else label)
                 }
-                replaceCurrent(item, pos)
-                if (label == "原画") originals.remove(idx)
-                showHint("画质：$label")
             }
-            .show()
+            replaceCurrent(item, pos)
+            if (label == "原画") originals.remove(idx)
+            showHint("画质：$label")
+        }
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()

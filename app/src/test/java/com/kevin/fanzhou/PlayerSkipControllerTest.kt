@@ -16,12 +16,54 @@ class PlayerSkipControllerTest {
     @Before
     fun setup() {
         Repo.init(RuntimeEnvironment.getApplication())
-        Repo.store.introSkipSec = 90
-        Repo.store.outroSkipSec = 90
+        Repo.store.introSkipSec = 0
+        Repo.store.outroSkipSec = 0
     }
 
     @Test
-    fun testAutoSkipIntro() {
+    fun testDefaultDisabledDoesNotAutoSkip() {
+        val controller = PlayerSkipController()
+        controller.onIndexChanged(0, 0L)
+        // Chapters exist, but skip is 0 (disabled by default)
+        controller.chapters = listOf(
+            com.kevin.fanzhou.player.PlayerChapter(0L, "Prologue"),
+            com.kevin.fanzhou.player.PlayerChapter(15_000L, "OP: Theme Song"),
+            com.kevin.fanzhou.player.PlayerChapter(105_000L, "Episode Part 1"),
+            com.kevin.fanzhou.player.PlayerChapter(920_000L, "ED: Ending Credits"),
+        )
+
+        var seekTarget = -1L
+        var nextCalled = false
+
+        // Should not skip intro
+        controller.checkAutoSkip(
+            posMs = 10_000L,
+            durMs = 1_000_000L,
+            currentIndex = 0,
+            queueSize = 2,
+            onSeek = { seekTarget = it },
+            onNextEpisode = { nextCalled = true },
+            showHint = {}
+        )
+        assertEquals(-1L, seekTarget)
+
+        // Should not skip outro
+        controller.checkAutoSkip(
+            posMs = 930_000L,
+            durMs = 1_000_000L,
+            currentIndex = 0,
+            queueSize = 2,
+            onSeek = { seekTarget = it },
+            onNextEpisode = { nextCalled = true },
+            showHint = {}
+        )
+        assertEquals(-1L, seekTarget)
+        assertEquals(false, nextCalled)
+    }
+
+    @Test
+    fun testAutoSkipIntroWhenConfigured() {
+        Repo.store.introSkipSec = 90
         val controller = PlayerSkipController()
         controller.onIndexChanged(0, 0L)
 
@@ -58,7 +100,8 @@ class PlayerSkipControllerTest {
     }
 
     @Test
-    fun testAutoSkipOutro() {
+    fun testAutoSkipOutroWhenConfigured() {
+        Repo.store.outroSkipSec = 90
         val controller = PlayerSkipController()
         controller.onIndexChanged(0, 0L)
         controller.introSkippedIndex = 0 // simulate intro already skipped
@@ -84,6 +127,7 @@ class PlayerSkipControllerTest {
 
     @Test
     fun testSeriesSpecificSkip() {
+        // Global is 0 (disabled), series has specific overrides
         val seriesKey = "cloud:test_folder_123"
         Repo.store.setIntroSkipForSeries(seriesKey, 45)
         Repo.store.setOutroSkipForSeries(seriesKey, 60)
@@ -92,8 +136,6 @@ class PlayerSkipControllerTest {
         controller.onIndexChanged(0, 0L)
 
         var seekTarget = -1L
-        var skippedFrom = -1L
-        var skippedTo = -1L
 
         controller.checkAutoSkip(
             posMs = 5000L,
@@ -104,15 +146,9 @@ class PlayerSkipControllerTest {
             onSeek = { seekTarget = it },
             onNextEpisode = {},
             showHint = {},
-            onIntroSkipped = { from, to ->
-                skippedFrom = from
-                skippedTo = to
-            }
         )
 
         assertEquals(45_000L, seekTarget)
-        assertEquals(5000L, skippedFrom)
-        assertEquals(45_000L, skippedTo)
 
         // Test outro with series override (dur 1_000_000 - 60_000 = 940_000)
         var nextCalled = false
@@ -130,16 +166,11 @@ class PlayerSkipControllerTest {
     }
 
     @Test
-    fun testChapterBasedSkip() {
+    fun testChapterBasedSkipWhenConfigured() {
+        Repo.store.introSkipSec = 90
+        Repo.store.outroSkipSec = 90
         val controller = PlayerSkipController()
-        controller.chapters = listOf(
-            com.kevin.fanzhou.player.PlayerChapter(0L, "Prologue"),
-            com.kevin.fanzhou.player.PlayerChapter(15_000L, "OP: Theme Song"),
-            com.kevin.fanzhou.player.PlayerChapter(105_000L, "Episode Part 1"),
-            com.kevin.fanzhou.player.PlayerChapter(920_000L, "ED: Ending Credits"),
-        )
         controller.onIndexChanged(0, 0L)
-        // Reset chapters since onIndexChanged clears them for a new item
         controller.chapters = listOf(
             com.kevin.fanzhou.player.PlayerChapter(0L, "Prologue"),
             com.kevin.fanzhou.player.PlayerChapter(15_000L, "OP: Theme Song"),
@@ -149,7 +180,6 @@ class PlayerSkipControllerTest {
 
         var seekTarget = -1L
         var hintShown = ""
-        var skippedFrom = -1L
 
         // Auto skip intro according to OP chapter end (105_000L)
         controller.checkAutoSkip(
@@ -160,12 +190,10 @@ class PlayerSkipControllerTest {
             onSeek = { seekTarget = it },
             onNextEpisode = {},
             showHint = { hintShown = it },
-            onIntroSkipped = { from, _ -> skippedFrom = from }
         )
 
         assertEquals(105_000L, seekTarget)
         assertEquals("已按章节跳过片头", hintShown)
-        assertEquals(10_000L, skippedFrom)
 
         // Auto skip outro according to ED chapter start (920_000L)
         var nextCalled = false

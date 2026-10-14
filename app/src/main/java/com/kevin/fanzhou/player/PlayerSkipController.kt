@@ -32,82 +32,81 @@ class PlayerSkipController {
         onSeek: (Long) -> Unit,
         onNextEpisode: () -> Unit,
         showHint: (String) -> Unit,
-        onIntroSkipped: (fromPosMs: Long, targetPosMs: Long) -> Unit = { _, _ -> },
     ) {
         if (durMs <= 0 || currentIndex < 0) return
 
         // 1. 自动跳过片头 (Auto Skip Intro)
         if (introSkippedIndex != currentIndex) {
-            // Check chapter first for OP
-            val opChapterIdx = chapters.indexOfFirst {
-                it.timeMs < (durMs / 2) && (
-                    it.title.contains("op", ignoreCase = true) ||
-                    it.title.contains("opening", ignoreCase = true) ||
-                    it.title.contains("片头", ignoreCase = true) ||
-                    it.title.contains("主题曲", ignoreCase = true)
-                )
-            }
-            val chapterIntroTarget = if (opChapterIdx >= 0 && opChapterIdx + 1 < chapters.size) {
-                chapters[opChapterIdx + 1].timeMs
-            } else null
-
             val introSec = seriesKey?.let { Repo.store.introSkipForSeries(it) } ?: Repo.store.introSkipSec
-            val introTarget = if (chapterIntroTarget != null && chapterIntroTarget in 10_000L..300_000L) {
-                chapterIntroTarget
-            } else if (introSec > 0) {
-                introSec * 1000L
-            } else null
+            if (introSec > 0) {
+                // Check chapter first for OP
+                val opChapterIdx = chapters.indexOfFirst {
+                    it.timeMs < (durMs / 2) && (
+                        it.title.contains("op", ignoreCase = true) ||
+                        it.title.contains("opening", ignoreCase = true) ||
+                        it.title.contains("片头", ignoreCase = true) ||
+                        it.title.contains("主题曲", ignoreCase = true)
+                    )
+                }
+                val chapterIntroTarget = if (opChapterIdx >= 0 && opChapterIdx + 1 < chapters.size) {
+                    chapters[opChapterIdx + 1].timeMs
+                } else null
 
-            if (introTarget != null && durMs > introTarget + 30_000L) {
-                if (posMs < introTarget - 2000L) {
-                    val fromPos = posMs
-                    introSkippedIndex = currentIndex
-                    onSeek(introTarget)
-                    val hint = if (chapterIntroTarget != null && introTarget == chapterIntroTarget) {
-                        "已按章节跳过片头"
+                val introTarget = if (chapterIntroTarget != null && chapterIntroTarget in 10_000L..300_000L) {
+                    chapterIntroTarget
+                } else {
+                    introSec * 1000L
+                }
+
+                if (durMs > introTarget + 30_000L) {
+                    if (posMs < introTarget - 2000L) {
+                        introSkippedIndex = currentIndex
+                        onSeek(introTarget)
+                        val hint = if (chapterIntroTarget != null && introTarget == chapterIntroTarget) {
+                            "已按章节跳过片头"
+                        } else {
+                            "已跳过片头"
+                        }
+                        showHint(hint)
+                        return
                     } else {
-                        "已跳过片头"
+                        introSkippedIndex = currentIndex
                     }
-                    showHint(hint)
-                    onIntroSkipped(fromPos, introTarget)
-                    return
                 } else {
                     introSkippedIndex = currentIndex
                 }
-            } else if (introTarget != null) {
-                introSkippedIndex = currentIndex
             }
         }
 
         // 2. 自动跳过片尾 (Auto Skip Outro)
         if (outroSkippedIndex != currentIndex) {
-            val edChapter = chapters.firstOrNull {
-                it.timeMs > (durMs / 2) && (
-                    it.title.contains("ed", ignoreCase = true) ||
-                    it.title.contains("ending", ignoreCase = true) ||
-                    it.title.contains("片尾", ignoreCase = true) ||
-                    it.title.contains("credits", ignoreCase = true)
-                )
-            }
-            val outroTarget = edChapter?.timeMs ?: run {
-                val outroSec = seriesKey?.let { Repo.store.outroSkipForSeries(it) } ?: Repo.store.outroSkipSec
-                if (outroSec > 0) durMs - outroSec * 1000L else -1L
-            }
-
-            val minOutro = 30_000L
-            if (outroTarget > minOutro && posMs >= outroTarget) {
-                outroSkippedIndex = currentIndex
-                val hint = if (edChapter != null && outroTarget == edChapter.timeMs) {
-                    if (currentIndex + 1 < queueSize) "已按章节跳过片尾，播放下一集" else "已按章节跳过片尾"
-                } else {
-                    if (currentIndex + 1 < queueSize) "已跳过片尾，播放下一集" else "已跳过片尾"
+            val outroSec = seriesKey?.let { Repo.store.outroSkipForSeries(it) } ?: Repo.store.outroSkipSec
+            if (outroSec > 0) {
+                val edChapter = chapters.firstOrNull {
+                    it.timeMs > (durMs / 2) && (
+                        it.title.contains("ed", ignoreCase = true) ||
+                        it.title.contains("ending", ignoreCase = true) ||
+                        it.title.contains("片尾", ignoreCase = true) ||
+                        it.title.contains("credits", ignoreCase = true)
+                    )
                 }
-                if (currentIndex + 1 < queueSize) {
-                    onNextEpisode()
-                    showHint(hint)
-                } else {
-                    onSeek(maxOf(0L, durMs - 1000L))
-                    showHint(hint)
+                val outroTarget = edChapter?.timeMs ?: (durMs - outroSec * 1000L)
+
+                val minOutro = 30_000L
+                if (outroTarget > minOutro && posMs >= outroTarget) {
+                    outroSkippedIndex = currentIndex
+                    val hint = if (edChapter != null && outroTarget == edChapter.timeMs) {
+                        if (currentIndex + 1 < queueSize) "已按章节跳过片尾，播放下一集" else "已按章节跳过片尾"
+                    } else {
+                        if (currentIndex + 1 < queueSize) "已跳过片尾，播放下一集" else "已跳过片尾"
+                    }
+                    if (currentIndex + 1 < queueSize) {
+                        onNextEpisode()
+                        showHint(hint)
+                    } else {
+                        onSeek(maxOf(0L, durMs - 1000L))
+                        showHint(hint)
+                    }
                 }
             }
         }
@@ -121,7 +120,6 @@ class PlayerSkipController {
         onSeek: (Long) -> Unit,
         showHint: (String) -> Unit,
         toast: (String) -> Unit,
-        onIntroSkipped: (fromPosMs: Long, targetPosMs: Long) -> Unit = { _, _ -> },
     ) {
         val seriesOverride = seriesKey?.let { Repo.store.introSkipForSeries(it) }
         val curSec = seriesOverride ?: Repo.store.introSkipSec
@@ -132,7 +130,7 @@ class PlayerSkipController {
             minSec = 0,
             maxSec = 180,
             seriesHint = seriesKey,
-            initialRememberSeries = seriesOverride != null,
+            initialRememberSeries = seriesKey != null,
             onSecChanged = { sec, remember ->
                 if (seriesKey != null && remember) {
                     Repo.store.setIntroSkipForSeries(seriesKey, sec)
@@ -148,11 +146,9 @@ class PlayerSkipController {
                 }
                 val target = sec * 1000L
                 if (currentPosMs < target - 2000L) {
-                    val fromPos = currentPosMs
                     introSkippedIndex = currentIndex
                     onSeek(target)
                     showHint("已跳过片头")
-                    onIntroSkipped(fromPos, target)
                 } else toast("当前进度已超过片头（${sec}秒）")
             },
         )
@@ -178,7 +174,7 @@ class PlayerSkipController {
             minSec = 0,
             maxSec = 300,
             seriesHint = seriesKey,
-            initialRememberSeries = seriesOverride != null,
+            initialRememberSeries = seriesKey != null,
             onSecChanged = { sec, remember ->
                 if (seriesKey != null && remember) {
                     Repo.store.setOutroSkipForSeries(seriesKey, sec)

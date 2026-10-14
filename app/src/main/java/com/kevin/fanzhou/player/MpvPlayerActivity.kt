@@ -32,6 +32,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -340,7 +341,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         posSec = p.startMs / 1000.0
         durSec = 0.0
         skipController.onIndexChanged(i, p.startMs)
-        hideUndoCapsule()
         updateChapterMarkers()
         smartSubPromptedIndex = -1
         hideSmartSubBubble()
@@ -565,29 +565,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     }
 
     private val skipController = PlayerSkipController()
-    private var undoCapsuleView: View? = null
-    private var undoFromPosMs: Long = 0L
-
-    private val dismissUndoCapsule = Runnable {
-        undoCapsuleView?.animate()?.alpha(0f)?.setDuration(300)?.withEndAction {
-            undoCapsuleView?.visibility = View.GONE
-        }
-    }
-
-    private fun showUndoCapsule(fromPosMs: Long) {
-        val v = undoCapsuleView ?: return
-        undoFromPosMs = fromPosMs
-        handler.removeCallbacks(dismissUndoCapsule)
-        v.alpha = 0f
-        v.visibility = View.VISIBLE
-        v.animate().alpha(1f).setDuration(200).start()
-        handler.postDelayed(dismissUndoCapsule, 5000)
-    }
-
-    private fun hideUndoCapsule() {
-        handler.removeCallbacks(dismissUndoCapsule)
-        undoCapsuleView?.visibility = View.GONE
-    }
 
     private fun updateChapterMarkers() {
         if (!::timeBar.isInitialized) return
@@ -660,9 +637,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             onSeek = { seekTo(it) },
             onNextEpisode = { playIndex(currentIndex + 1) },
             showHint = { showHint(it) },
-            onIntroSkipped = { fromPos, _ ->
-                showUndoCapsule(fromPos)
-            },
         )
     }
 
@@ -670,42 +644,13 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         AudioBoost.applyMpv(mpv)
     }
 
-    private fun showAudioEnhanceDialog() {
-        val boostValues = listOf(1.0f, 1.25f, 1.5f, 2.0f)
-        val boostLabels = listOf("100% (标准)", "125%", "150%", "200% (翻倍)")
-        val currentBoost = Repo.store.volumeBoost
-        val voice = Repo.store.voiceEnhance
-
-        val items = arrayOf(
-            "夜间人声对白增强: " + if (voice) "【开启】" else "【关闭】",
-            "音量软放大: " + (boostLabels.getOrNull(boostValues.indexOfFirst { kotlin.math.abs(it - currentBoost) < 0.05f }) ?: "100%")
+    private fun showAudioEnhanceDialog(anchor: View? = null) {
+        val targetAnchor = anchor ?: findViewById(R.id.mpv_settings) ?: topBar
+        AudioEnhancePopup.show(
+            anchor = targetAnchor,
+            onChanged = { applyAudioBoost() },
+            showHint = { showHint(it) }
         )
-
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("音频增强与人声")
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> {
-                        val newVal = !Repo.store.voiceEnhance
-                        Repo.store.voiceEnhance = newVal
-                        applyAudioBoost()
-                        showHint("人声增强：" + if (newVal) "开启" else "关闭")
-                    }
-                    1 -> {
-                        val sel = boostValues.indexOfFirst { kotlin.math.abs(it - Repo.store.volumeBoost) < 0.05f }.coerceAtLeast(0)
-                        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                            .setTitle("音量软放大")
-                            .setSingleChoiceItems(boostLabels.toTypedArray(), sel) { d, i ->
-                                Repo.store.volumeBoost = boostValues[i]
-                                applyAudioBoost()
-                                showHint("音量软放大：${boostLabels[i]}")
-                                d.dismiss()
-                            }
-                            .show()
-                    }
-                }
-            }
-            .show()
     }
 
     private var subBubbleView: View? = null
@@ -811,7 +756,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         hintView.background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0x99000000.toInt()) }
         topBar.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xAA000000.toInt(), 0x00000000))
 
-        fun iconBtn(res: Int, desc: String, onClick: () -> Unit) = ImageButton(this).apply {
+        fun iconBtn(res: Int, desc: String, onClick: (View) -> Unit) = ImageButton(this).apply {
             setImageResource(res)
             contentDescription = desc
             val tv = TypedValue()
@@ -820,7 +765,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             setColorFilter(Color.WHITE)
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            setOnClickListener { onClick(); bumpControls() }
+            setOnClickListener { onClick(it); bumpControls() }
         }
         topBar.addView(iconBtn(R.drawable.ic_back, "返回") { finish() }, LinearLayout.LayoutParams(dp(44), dp(44)))
         titleView = TextView(this).apply {
@@ -833,7 +778,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
         topBar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
         topBar.addView(iconBtn(R.drawable.ic_core, "切换到 ExoPlayer 内核") { switchToExo() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
-        topBar.addView(iconBtn(R.drawable.ic_hd, "画质") { showQualityMenu() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
+        topBar.addView(iconBtn(R.drawable.ic_hd, "画质") { v -> showQualityMenu(v) }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(4) })
         topBar.addView(iconBtn(R.drawable.ic_aspect, "画面比例") { cycleAspect() }, LinearLayout.LayoutParams(dp(44), dp(44)))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             topBar.addView(iconBtn(R.drawable.ic_pip, "画中画") { enterPip() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4) })
@@ -857,6 +802,17 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_settings).setOnClickListener { v -> showSettingsMenu(v); bumpControls() }
         findViewById<View>(R.id.mpv_speed)?.setOnClickListener { showSpeedPopup(it); bumpControls() }
         updateSpeedLabel()
+
+        val consumeAndBump = View.OnClickListener { bumpControls() }
+        findViewById<View>(R.id.mpv_bottom_bar).setOnClickListener(consumeAndBump)
+        val bottomBarGroup = findViewById<ViewGroup>(R.id.mpv_bottom_bar)
+        for (i in 0 until bottomBarGroup.childCount) {
+            bottomBarGroup.getChildAt(i).setOnClickListener(consumeAndBump)
+        }
+        findViewById<View>(R.id.mpv_progress_row).setOnClickListener(consumeAndBump)
+        findViewById<View>(R.id.mpv_position).setOnClickListener(consumeAndBump)
+        findViewById<View>(R.id.mpv_duration).setOnClickListener(consumeAndBump)
+        topBar.setOnClickListener(consumeAndBump)
         timeBar.addListener(object : TimeBar.OnScrubListener {
             override fun onScrubStart(timeBar: TimeBar, position: Long) { scrubbing = true; handler.removeCallbacks(hideControlsRunnable) }
             override fun onScrubMove(timeBar: TimeBar, position: Long) { posView.text = fmt(position) }
@@ -864,7 +820,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 scrubbing = false
                 if (!canceled) {
                     seekTo(position)
-                    hideUndoCapsule()
                 }
                 bumpControls()
             }
@@ -907,47 +862,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             marginEnd = dp(16)
             bottomMargin = dp(84)
         })
-
-        undoCapsuleView = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply {
-                setColor(0xE6212121.toInt())
-                cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), 0x55FFFFFF.toInt())
-            }
-            setPadding(dp(12), dp(6), dp(10), dp(6))
-            elevation = dp(6).toFloat()
-            visibility = View.GONE
-
-            val tv = TextView(this@MpvPlayerActivity).apply {
-                text = "⏪ 已跳过片头 · 撤销"
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-            }
-            addView(tv)
-
-            val closeBtn = TextView(this@MpvPlayerActivity).apply {
-                text = "✕"
-                setTextColor(0xAAFFFFFF.toInt())
-                textSize = 14f
-                setPadding(dp(8), 0, dp(4), 0)
-                setOnClickListener { hideUndoCapsule() }
-            }
-            addView(closeBtn)
-
-            setOnClickListener {
-                val target = undoFromPosMs
-                hideUndoCapsule()
-                seekTo(target)
-                showHint("已恢复片头播放")
-            }
-        }
-        val undoLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START)
-        undoLp.marginStart = dp(16)
-        undoLp.bottomMargin = dp(84)
-        findViewById<FrameLayout>(R.id.mpv_root).addView(undoCapsuleView, undoLp)
 
         attachGestures()
     }
@@ -1386,7 +1300,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             if (skipController.chapters.isNotEmpty()) items += IconMenu.Item(R.drawable.ic_view_list, "章节(${skipController.chapters.size})") { showChapterDialog() }
             items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
             items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
-            items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog() }
+            items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog(anchor) }
             items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
             IconMenu.show(anchor, items)
             return
@@ -1403,7 +1317,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (skipController.chapters.isNotEmpty()) items += IconMenu.Item(R.drawable.ic_view_list, "章节(${skipController.chapters.size})") { showChapterDialog() }
         items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
-        items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog() }
+        items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog(anchor) }
         items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
         IconMenu.show(anchor, items)
     }
@@ -1419,9 +1333,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             onSeek = { seekTo(it) },
             showHint = { showHint(it) },
             toast = { toast(it) },
-            onIntroSkipped = { fromPos, _ ->
-                showUndoCapsule(fromPos)
-            },
         )
     }
 
@@ -1480,7 +1391,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             .show()
     }
 
-    private fun showQualityMenu() {
+    private fun showQualityMenu(anchor: View? = null) {
         val idx = currentIndex
         val p = queue.getOrNull(idx) ?: return
         val orig = originals[idx] ?: p
@@ -1499,7 +1410,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 val opts = listOf<Pair<String, () -> PlayItem>>("原画" to { orig }) + presets.map { (label, br, w) ->
                     label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap()) }
                 }
-                pickQuality(idx, opts)
+                pickQuality(idx, opts, anchor)
             }
             cf != null -> {
                 val sid = orig.sourceId ?: return
@@ -1513,40 +1424,38 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                         label to { orig.copy(url = r.url, headers = r.headers, mime = r.mime, cloudFile = cf) }
                     }
                     if (opts.size == 1) toast("网盘暂时没有这个视频的转码版本，只有原画")
-                    pickQuality(idx, opts)
+                    pickQuality(idx, opts, anchor)
                 }
             }
             else -> toast("该来源只有原画")
         }
     }
 
-    private fun pickQuality(idx: Int, opts: List<Pair<String, () -> PlayItem>>) {
+    private fun pickQuality(idx: Int, opts: List<Pair<String, () -> PlayItem>>, anchor: View? = null) {
         if (opts.size <= 1) return
         val cur = qualityLabel[idx] ?: "原画"
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("画质")
-            .setSingleChoiceItems(opts.map { it.first }.toTypedArray(), opts.indexOfFirst { it.first == cur }) { d, which ->
-                d.dismiss()
-                val (label, make) = opts[which]
-                if (label == cur || idx != currentIndex) return@setSingleChoiceItems
-                // Remember the manual pick for this cloud folder; later episodes start at it.
-                (originals[idx] ?: queue.getOrNull(idx))?.let { o ->
-                    val key = o.cloudFolderKey
-                    if (key != null && o.cloudFile != null) {
-                        folderQualityApplied.add(idx)
-                        Repo.store.setQualityForFolder(key, if (label == "原画") null else label)
-                    }
+        val checked = opts.indexOfFirst { it.first == cur }
+        val targetAnchor = anchor ?: topBar
+        QualityPopup.show(targetAnchor, opts.map { it.first }, checked) { which ->
+            val (label, make) = opts[which]
+            if (label == cur || idx != currentIndex) return@show
+            // Remember the manual pick for this cloud folder; later episodes start at it.
+            (originals[idx] ?: queue.getOrNull(idx))?.let { o ->
+                val key = o.cloudFolderKey
+                if (key != null && o.cloudFile != null) {
+                    folderQualityApplied.add(idx)
+                    Repo.store.setQualityForFolder(key, if (label == "原画") null else label)
                 }
-                cloudLadderStep.remove(idx)
-                if (label == "原画") {
-                    val o = originals.remove(idx) ?: return@setSingleChoiceItems
-                    queue[idx] = o
-                    qualityLabel.remove(idx)
-                    load(o, posMs)
-                } else replaceCurrent(make(), label)
-                showHint("画质：$label")
             }
-            .show()
+            cloudLadderStep.remove(idx)
+            if (label == "原画") {
+                val o = originals.remove(idx) ?: return@show
+                queue[idx] = o
+                qualityLabel.remove(idx)
+                load(o, posMs)
+            } else replaceCurrent(make(), label)
+            showHint("画质：$label")
+        }
     }
 
     /** Hands the queue and position back to ExoPlayer. */
@@ -1565,6 +1474,48 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         finish()
     }
 
+    private fun isTouchInControlArea(rawX: Int, rawY: Int): Boolean {
+        if (controls.visibility != View.VISIBLE) return false
+        // 1. Top bar
+        if (::topBar.isInitialized && topBar.visibility == View.VISIBLE) {
+            val rect = Rect()
+            topBar.getGlobalVisibleRect(rect)
+            if (rawY <= rect.bottom) return true
+        }
+        // 2. Rotate button
+        if (::rotateBtn.isInitialized && rotateBtn.visibility == View.VISIBLE) {
+            val rect = Rect()
+            rotateBtn.getGlobalVisibleRect(rect)
+            if (rect.contains(rawX, rawY)) return true
+        }
+        // 3. Subtitle bubble
+        subBubbleView?.let { bubble ->
+            if (bubble.visibility == View.VISIBLE) {
+                val rect = Rect()
+                bubble.getGlobalVisibleRect(rect)
+                if (rect.contains(rawX, rawY)) return true
+            }
+        }
+        // 4. Bottom bar area (progress row + bottom bar)
+        val progressRow = findViewById<View>(R.id.mpv_progress_row)
+        val bottomBar = findViewById<View>(R.id.mpv_bottom_bar)
+        var bottomTop = Int.MAX_VALUE
+        if (progressRow != null && progressRow.visibility == View.VISIBLE) {
+            val rect = Rect()
+            progressRow.getGlobalVisibleRect(rect)
+            if (rect.top > 0) bottomTop = minOf(bottomTop, rect.top)
+        }
+        if (bottomBar != null && bottomBar.visibility == View.VISIBLE) {
+            val rect = Rect()
+            bottomBar.getGlobalVisibleRect(rect)
+            if (rect.top > 0) bottomTop = minOf(bottomTop, rect.top)
+        }
+        if (bottomTop != Int.MAX_VALUE && rawY >= bottomTop) {
+            return true
+        }
+        return false
+    }
+
     // ---------------- gestures ----------------
 
     private enum class Drag { NONE, SEEK, BRIGHTNESS, VOLUME }
@@ -1580,14 +1531,27 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         var startVolume = 0
         val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val slop = dp(16)
+        var touchStartedInControls = false
 
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (controls.visibility == View.VISIBLE) hideControls() else showControls()
+                if (controls.visibility == View.VISIBLE) {
+                    if (isTouchInControlArea(e.rawX.toInt(), e.rawY.toInt())) {
+                        bumpControls()
+                        return true
+                    }
+                    hideControls()
+                } else {
+                    showControls()
+                }
                 return true
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (controls.visibility == View.VISIBLE && isTouchInControlArea(e.rawX.toInt(), e.rawY.toInt())) {
+                    bumpControls()
+                    return true
+                }
                 val w = touch.width
                 val step = Repo.store.seekStepSec
                 when {
@@ -1599,7 +1563,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             }
 
             override fun onLongPress(e: MotionEvent) {
-                if (drag != Drag.NONE || paused) return
+                if (drag != Drag.NONE || paused || touchStartedInControls) return
                 longPressActive = true
                 speedBeforeLongPress = speed
                 mpv?.setPropertyDouble("speed", 2.0)
@@ -1608,6 +1572,18 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         })
 
         touch.setOnTouchListener { _, ev ->
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                touchStartedInControls = isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt())
+                if (touchStartedInControls) {
+                    bumpControls()
+                }
+            }
+            if (touchStartedInControls) {
+                if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    touchStartedInControls = false
+                }
+                return@setOnTouchListener true
+            }
             detector.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1654,7 +1630,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     }
                     if (drag == Drag.SEEK) {
                         seekTo(targetPos)
-                        hideUndoCapsule()
                     }
                     drag = Drag.NONE
                     handler.postDelayed(hideHint, 400)

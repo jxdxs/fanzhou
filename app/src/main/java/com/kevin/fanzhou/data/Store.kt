@@ -88,9 +88,9 @@ class Store(context: Context) {
         get() = prefs.getBoolean("mpv_hwdec", true)
         set(v) { prefs.edit().putBoolean("mpv_hwdec", v).apply() }
 
-    /** 跳过片头：自动/手动跳过片头秒数（默认 90 秒，0 为关闭）。 */
+    /** 跳过片头：自动/手动跳过片头秒数（默认 0 秒，0 为未打开）。 */
     var introSkipSec: Int
-        get() = prefs.getInt("intro_skip_sec", 90)
+        get() = prefs.getInt("intro_skip_sec", 0)
         set(v) { prefs.edit().putInt("intro_skip_sec", v).apply() }
 
     /** 按剧集/文件夹独立记忆片头秒数。返回 null 表示使用全局默认值。 */
@@ -103,9 +103,9 @@ class Store(context: Context) {
         else prefs.edit().putInt("intro_skip_series_$key", sec).apply()
     }
 
-    /** 跳过片尾：自动/手动跳过片尾秒数（默认 90 秒，0 为关闭）。 */
+    /** 跳过片尾：自动/手动跳过片尾秒数（默认 0 秒，0 为未打开）。 */
     var outroSkipSec: Int
-        get() = prefs.getInt("outro_skip_sec", 90)
+        get() = prefs.getInt("outro_skip_sec", 0)
         set(v) { prefs.edit().putInt("outro_skip_sec", v).apply() }
 
     /** 按剧集/文件夹独立记忆片尾秒数。返回 null 表示使用全局默认值。 */
