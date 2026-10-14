@@ -231,6 +231,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     var infoFile by remember { mutableStateOf<CloudFile?>(null) }
     var renameFile by remember { mutableStateOf<CloudFile?>(null) }
     var deleteFile by remember { mutableStateOf<CloudFile?>(null) }
+    var deleteRecent by remember { mutableStateOf<CloudRecent?>(null) }
     val opScope = rememberCoroutineScope()
     fun fileOp(done: String, op: suspend () -> Unit) {
         opScope.launch {
@@ -289,7 +290,8 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
         base.sortedWith(cmp)
     }
     val videos = shown.filter { it.isVideo }
-    val recent = remember(sid, resumeTick) { if (isRoot) store.cloudRecent(sid) else emptyList() }
+    var recentTick by remember { mutableIntStateOf(0) }
+    val recent = remember(sid, resumeTick, recentTick) { if (isRoot) store.cloudRecent(sid) else emptyList() }
     val crumbs = listOf(drive.source.name) + path + listOfNotNull(if (isRoot) null else (title ?: ""))
     val depth = crumbs.size - 1
 
@@ -310,6 +312,11 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
         store.removeCloudFav(sid, fav.id)
         favs = store.cloudFavs(sid)
         android.widget.Toast.makeText(context, "已取消收藏", android.widget.Toast.LENGTH_SHORT).show()
+    }
+    fun removeRecent(r: CloudRecent) {
+        store.removeCloudRecent(sid, r.id)
+        recentTick++
+        android.widget.Toast.makeText(context, "已删除播放记录", android.widget.Toast.LENGTH_SHORT).show()
     }
     fun addRecent(f: CloudFile) = store.addCloudRecent(
         sid, CloudRecent(f.id, f.name, f.extra, f.size, f.thumb, f.duration, dirId, title, System.currentTimeMillis())
@@ -419,6 +426,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                 RootHeader(
                     drive, usage, recent, headers, favs,
                     onRecent = ::playRecent,
+                    onRecentRemove = { deleteRecent = it },
                     onFavVideo = ::playFav,
                     onFavDir = { fav -> nav.navigate(Routes.cloud(sid, fav.id, fav.name, fav.path)) },
                     onFavRemove = ::removeFav,
@@ -533,6 +541,26 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     }
     deleteFile?.let { f ->
         DeleteDialog(f.name, f.isDir, toTrash = true, onDismiss = { deleteFile = null }) { deleteFile = null; fileOp("已移到回收站") { drive.delete(f) } }
+    }
+    deleteRecent?.let { r ->
+        AlertDialog(
+            onDismissRequest = { deleteRecent = null },
+            title = { Text("删除播放记录？") },
+            text = { Text("确定要删除「${r.name.substringBeforeLast('.')}」的播放记录吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteRecent = null
+                    removeRecent(r)
+                }) {
+                    Text("删除", color = Color(0xFFE5484D))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteRecent = null }) {
+                    Text("取消")
+                }
+            },
+        )
     }
 
     infoFile?.let { f ->
@@ -812,6 +840,7 @@ private fun RootHeader(
     drive: CloudDrive, usage: Pair<Long, Long>?, recent: List<CloudRecent>, headers: Map<String, String>,
     favs: List<CloudFav>,
     onRecent: (CloudRecent) -> Unit,
+    onRecentRemove: (CloudRecent) -> Unit,
     onFavVideo: (CloudFav) -> Unit,
     onFavDir: (CloudFav) -> Unit,
     onFavRemove: (CloudFav) -> Unit,
@@ -906,7 +935,10 @@ private fun RootHeader(
                 items(recent, key = { it.id }) { r ->
                     val f = CloudFile(r.id, r.name, false, r.size, r.extra, thumb = r.thumb, duration = r.duration)
                     val pos = Repo.store.position(posKey(s.id, r.id))
-                    Column(Modifier.width(150.dp).clickable { onRecent(r) }) {
+                    Column(
+                        Modifier.width(150.dp).clip(RoundedCornerShape(10.dp))
+                            .combinedClickable(onClick = { onRecent(r) }, onLongClick = { onRecentRemove(r) }),
+                    ) {
                         ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 26, sid = s.id)
                         Text(r.name.substringBeforeLast('.'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
                         Text(

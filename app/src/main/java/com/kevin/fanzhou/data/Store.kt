@@ -145,6 +145,11 @@ class Store(context: Context) {
         prefs.edit().putString("cloud_recent_$sid", json.encodeToString(list)).apply()
     }
 
+    fun removeCloudRecent(sid: String, id: String) {
+        val list = cloudRecent(sid).filterNot { it.id == id }
+        prefs.edit().putString("cloud_recent_$sid", json.encodeToString(list)).apply()
+    }
+
     /** Favorite cloud videos & folders for one source, newest first. */
     fun cloudFavs(sid: String): List<CloudFav> = try {
         json.decodeFromString(prefs.getString("cloud_favs_$sid", "[]") ?: "[]")

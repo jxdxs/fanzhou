@@ -34,4 +34,20 @@ class SyncTest {
         org.robolectric.shadows.ShadowLooper.idleMainLooper()
         assertEquals(1, Repo.store.sources.value.size)
     }
+
+    @Test fun cloudRecentAddAndRemove() {
+        val s = Repo.store
+        val sid = "test_src"
+        val r1 = com.kevin.fanzhou.data.CloudRecent(id = "vid1", name = "Video 1.mp4")
+        val r2 = com.kevin.fanzhou.data.CloudRecent(id = "vid2", name = "Video 2.mp4")
+        s.addCloudRecent(sid, r1)
+        s.addCloudRecent(sid, r2)
+        assertEquals(2, s.cloudRecent(sid).size)
+        assertEquals("vid2", s.cloudRecent(sid)[0].id)
+        s.removeCloudRecent(sid, "vid1")
+        assertEquals(1, s.cloudRecent(sid).size)
+        assertEquals("vid2", s.cloudRecent(sid)[0].id)
+        s.removeCloudRecent(sid, "vid2")
+        assertEquals(0, s.cloudRecent(sid).size)
+    }
 }
