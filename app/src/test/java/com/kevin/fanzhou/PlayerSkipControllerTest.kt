@@ -81,4 +81,130 @@ class PlayerSkipControllerTest {
         assertEquals("已跳过片尾，播放下一集", hintShown)
         assertEquals(0, controller.outroSkippedIndex)
     }
+
+    @Test
+    fun testSeriesSpecificSkip() {
+        val seriesKey = "cloud:test_folder_123"
+        Repo.store.setIntroSkipForSeries(seriesKey, 45)
+        Repo.store.setOutroSkipForSeries(seriesKey, 60)
+
+        val controller = PlayerSkipController()
+        controller.onIndexChanged(0, 0L)
+
+        var seekTarget = -1L
+        var skippedFrom = -1L
+        var skippedTo = -1L
+
+        controller.checkAutoSkip(
+            posMs = 5000L,
+            durMs = 1_000_000L,
+            currentIndex = 0,
+            queueSize = 2,
+            seriesKey = seriesKey,
+            onSeek = { seekTarget = it },
+            onNextEpisode = {},
+            showHint = {},
+            onIntroSkipped = { from, to ->
+                skippedFrom = from
+                skippedTo = to
+            }
+        )
+
+        assertEquals(45_000L, seekTarget)
+        assertEquals(5000L, skippedFrom)
+        assertEquals(45_000L, skippedTo)
+
+        // Test outro with series override (dur 1_000_000 - 60_000 = 940_000)
+        var nextCalled = false
+        controller.checkAutoSkip(
+            posMs = 945_000L,
+            durMs = 1_000_000L,
+            currentIndex = 0,
+            queueSize = 2,
+            seriesKey = seriesKey,
+            onSeek = {},
+            onNextEpisode = { nextCalled = true },
+            showHint = {}
+        )
+        assertTrue(nextCalled)
+    }
+
+    @Test
+    fun testChapterBasedSkip() {
+        val controller = PlayerSkipController()
+        controller.chapters = listOf(
+            com.kevin.fanzhou.player.PlayerChapter(0L, "Prologue"),
+            com.kevin.fanzhou.player.PlayerChapter(15_000L, "OP: Theme Song"),
+            com.kevin.fanzhou.player.PlayerChapter(105_000L, "Episode Part 1"),
+            com.kevin.fanzhou.player.PlayerChapter(920_000L, "ED: Ending Credits"),
+        )
+        controller.onIndexChanged(0, 0L)
+        // Reset chapters since onIndexChanged clears them for a new item
+        controller.chapters = listOf(
+            com.kevin.fanzhou.player.PlayerChapter(0L, "Prologue"),
+            com.kevin.fanzhou.player.PlayerChapter(15_000L, "OP: Theme Song"),
+            com.kevin.fanzhou.player.PlayerChapter(105_000L, "Episode Part 1"),
+            com.kevin.fanzhou.player.PlayerChapter(920_000L, "ED: Ending Credits"),
+        )
+
+        var seekTarget = -1L
+        var hintShown = ""
+        var skippedFrom = -1L
+
+        // Auto skip intro according to OP chapter end (105_000L)
+        controller.checkAutoSkip(
+            posMs = 10_000L,
+            durMs = 1_000_000L,
+            currentIndex = 0,
+            queueSize = 2,
+            onSeek = { seekTarget = it },
+            onNextEpisode = {},
+            showHint = { hintShown = it },
+            onIntroSkipped = { from, _ -> skippedFrom = from }
+        )
+
+        assertEquals(105_000L, seekTarget)
+        assertEquals("已按章节跳过片头", hintShown)
+        assertEquals(10_000L, skippedFrom)
+
+        // Auto skip outro according to ED chapter start (920_000L)
+        var nextCalled = false
+        controller.checkAutoSkip(
+            posMs = 925_000L,
+            durMs = 1_000_000L,
+            currentIndex = 0,
+            queueSize = 2,
+            onSeek = {},
+            onNextEpisode = { nextCalled = true },
+            showHint = { hintShown = it }
+        )
+
+        assertTrue(nextCalled)
+        assertEquals("已按章节跳过片尾，播放下一集", hintShown)
+    }
+
+    @Test
+    fun testPlayItemSeriesKey() {
+        val cloudItem = com.kevin.fanzhou.data.PlayItem(
+            title = "Episode 01",
+            url = "http://example.com/play/1.mp4",
+            cloudFolderKey = "folder_abc"
+        )
+        assertEquals("cloud:folder_abc", cloudItem.seriesKey)
+
+        val jfItem = com.kevin.fanzhou.data.PlayItem(
+            title = "Episode 01",
+            url = "http://jf.local/stream",
+            sourceId = "jf_srv",
+            jfItemId = "jf_item_1"
+        )
+        assertEquals("jf:jf_srv:Episode 01", jfItem.seriesKey)
+
+        val webDavItem = com.kevin.fanzhou.data.PlayItem(
+            title = "Episode 01",
+            url = "http://dav.local/Anime/SousouNoFrieren/EP01.mkv?token=123",
+            sourceId = "dav_1"
+        )
+        assertEquals("dir:dav_1:http://dav.local/Anime/SousouNoFrieren", webDavItem.seriesKey)
+    }
 }

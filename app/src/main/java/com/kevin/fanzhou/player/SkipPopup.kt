@@ -22,13 +22,16 @@ object SkipPopup {
         initialSec: Int,
         minSec: Int,
         maxSec: Int,
-        onSecChanged: (Int) -> Unit,
-        onSkip: (Int) -> Unit,
+        seriesHint: String? = null,
+        initialRememberSeries: Boolean = false,
+        onSecChanged: (sec: Int, rememberSeries: Boolean) -> Unit,
+        onSkip: (sec: Int) -> Unit,
     ) {
         val ctx = anchor.context
         val dm = ctx.resources.displayMetrics
         fun dp(v: Int) = (v * dm.density).toInt()
         var sec = initialSec.coerceIn(minSec, maxSec)
+        var rememberSeries = initialRememberSeries
 
         val panel = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -80,10 +83,32 @@ object SkipPopup {
             isFocusable = true
             setOnClickListener { onTap() }
         }
-        stepper.addView(stepBtn("−") { sec = (sec - 5).coerceAtLeast(minSec); refresh(); onSecChanged(sec) })
+        stepper.addView(stepBtn("−") { sec = (sec - 5).coerceAtLeast(minSec); refresh(); onSecChanged(sec, rememberSeries) })
         stepper.addView(label)
-        stepper.addView(stepBtn("+") { sec = (sec + 5).coerceAtMost(maxSec); refresh(); onSecChanged(sec) })
+        stepper.addView(stepBtn("+") { sec = (sec + 5).coerceAtMost(maxSec); refresh(); onSecChanged(sec, rememberSeries) })
         panel.addView(stepper)
+
+        if (!seriesHint.isNullOrEmpty()) {
+            val checkRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(2), 0, dp(4))
+            }
+            val cb = android.widget.CheckBox(ctx).apply {
+                isChecked = initialRememberSeries
+                text = "记住本剧设置"
+                setTextColor(Color.LTGRAY)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                buttonTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+                setOnCheckedChangeListener { _, isChecked ->
+                    rememberSeries = isChecked
+                    onSecChanged(sec, rememberSeries)
+                }
+            }
+            checkRow.addView(cb)
+            panel.addView(checkRow)
+        }
+
         val actions = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER

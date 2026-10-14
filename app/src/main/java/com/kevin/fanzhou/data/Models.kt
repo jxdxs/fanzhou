@@ -177,6 +177,18 @@ data class PlayItem(
             ?: jfItemId?.let { "jf:${sourceId ?: ""}:$it" }
             ?: cloudFile?.let { "cloud:${sourceId ?: ""}:${it.id}" }
             ?: "url:${url.substringBefore('?')}"
+
+    /** Scopes episode settings (like custom skip intro/outro seconds) to the entire series/folder. */
+    val seriesKey: String
+        get() {
+            if (!cloudFolderKey.isNullOrEmpty()) return "cloud:$cloudFolderKey"
+            if (!jfItemId.isNullOrEmpty()) return "jf:${sourceId ?: ""}:$title"
+            if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("smb://") || url.startsWith("file://") || url.startsWith("/")) {
+                val parent = url.substringBefore('?').substringBeforeLast('/')
+                if (parent.isNotEmpty()) return "dir:${sourceId ?: ""}:$parent"
+            }
+            return "title:$title"
+        }
 }
 
 data class SubTrack(val url: String, val label: String, val mime: String, val lang: String? = null) {

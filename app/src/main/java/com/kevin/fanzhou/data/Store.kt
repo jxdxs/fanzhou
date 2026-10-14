@@ -93,10 +93,30 @@ class Store(context: Context) {
         get() = prefs.getInt("intro_skip_sec", 90)
         set(v) { prefs.edit().putInt("intro_skip_sec", v).apply() }
 
+    /** 按剧集/文件夹独立记忆片头秒数。返回 null 表示使用全局默认值。 */
+    fun introSkipForSeries(key: String): Int? {
+        val v = prefs.getInt("intro_skip_series_$key", -1)
+        return if (v >= 0) v else null
+    }
+    fun setIntroSkipForSeries(key: String, sec: Int?) {
+        if (sec == null || sec < 0) prefs.edit().remove("intro_skip_series_$key").apply()
+        else prefs.edit().putInt("intro_skip_series_$key", sec).apply()
+    }
+
     /** 跳过片尾：自动/手动跳过片尾秒数（默认 90 秒，0 为关闭）。 */
     var outroSkipSec: Int
         get() = prefs.getInt("outro_skip_sec", 90)
         set(v) { prefs.edit().putInt("outro_skip_sec", v).apply() }
+
+    /** 按剧集/文件夹独立记忆片尾秒数。返回 null 表示使用全局默认值。 */
+    fun outroSkipForSeries(key: String): Int? {
+        val v = prefs.getInt("outro_skip_series_$key", -1)
+        return if (v >= 0) v else null
+    }
+    fun setOutroSkipForSeries(key: String, sec: Int?) {
+        if (sec == null || sec < 0) prefs.edit().remove("outro_skip_series_$key").apply()
+        else prefs.edit().putInt("outro_skip_series_$key", sec).apply()
+    }
 
     /** 字幕大小缩放倍率：1.0f (标准), 1.25f (较大), 1.5f (大), 1.75f (特大). 默认 1.3f */
     var subtitleScale: Float

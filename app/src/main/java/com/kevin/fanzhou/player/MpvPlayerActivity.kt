@@ -340,6 +340,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         posSec = p.startMs / 1000.0
         durSec = 0.0
         skipController.onIndexChanged(i, p.startMs)
+        hideUndoCapsule()
+        updateChapterMarkers()
         smartSubPromptedIndex = -1
         hideSmartSubBubble()
         updateMediaSessionMetadata(p)
@@ -425,6 +427,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val p = queue.getOrNull(currentIndex) ?: return
         updateMediaSessionMetadata(p)
         updateMediaSessionState()
+        loadMpvChapters()
         checkAutoSkip()
         attachSavedSub(p)
         // External subtitles (sibling files / Jellyfin / cloud).
@@ -562,20 +565,104 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     }
 
     private val skipController = PlayerSkipController()
+    private var undoCapsuleView: View? = null
+    private var undoFromPosMs: Long = 0L
+
+    private val dismissUndoCapsule = Runnable {
+        undoCapsuleView?.animate()?.alpha(0f)?.setDuration(300)?.withEndAction {
+            undoCapsuleView?.visibility = View.GONE
+        }
+    }
+
+    private fun showUndoCapsule(fromPosMs: Long) {
+        val v = undoCapsuleView ?: return
+        undoFromPosMs = fromPosMs
+        handler.removeCallbacks(dismissUndoCapsule)
+        v.alpha = 0f
+        v.visibility = View.VISIBLE
+        v.animate().alpha(1f).setDuration(200).start()
+        handler.postDelayed(dismissUndoCapsule, 5000)
+    }
+
+    private fun hideUndoCapsule() {
+        handler.removeCallbacks(dismissUndoCapsule)
+        undoCapsuleView?.visibility = View.GONE
+    }
+
+    private fun updateChapterMarkers() {
+        if (!::timeBar.isInitialized) return
+        val chs = skipController.chapters
+        if (chs.isEmpty()) {
+            timeBar.setAdGroupTimesMs(longArrayOf(), booleanArrayOf(), 0)
+            return
+        }
+        val times = chs.map { it.timeMs }.filter { it > 0 }.toLongArray()
+        val played = BooleanArray(times.size)
+        timeBar.setAdMarkerColor(0xCCFFFFFF.toInt())
+        timeBar.setPlayedAdMarkerColor(0x88FFFFFF.toInt())
+        timeBar.setAdGroupTimesMs(times, played, times.size)
+    }
+
+    private fun loadMpvChapters() {
+        val m = mpv ?: return
+        val count = m.getPropertyInt("chapter-list/count") ?: 0
+        if (count <= 0) {
+            skipController.chapters = emptyList()
+            updateChapterMarkers()
+            return
+        }
+        val list = ArrayList<PlayerChapter>(count)
+        for (i in 0 until count) {
+            val timeSec = m.getPropertyDouble("chapter-list/$i/time") ?: 0.0
+            val title = m.getPropertyString("chapter-list/$i/title")?.takeIf { it.isNotEmpty() } ?: "第 ${i + 1} 章"
+            list.add(PlayerChapter((timeSec * 1000).toLong(), title))
+        }
+        list.sortBy { it.timeMs }
+        skipController.chapters = list
+        updateChapterMarkers()
+    }
+
+    private fun showChapterDialog() {
+        val chs = skipController.chapters
+        if (chs.isEmpty()) return
+        val curPos = (posSec * 1000).toLong()
+        val curIdx = chs.indexOfLast { it.timeMs <= curPos }.coerceAtLeast(0)
+        val items = chs.map { ch ->
+            val m = ch.timeMs / 1000 / 60
+            val s = (ch.timeMs / 1000) % 60
+            "%02d:%02d  %s".format(m, s, ch.title)
+        }.toTypedArray()
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("选择章节 (${chs.size})")
+            .setSingleChoiceItems(items, curIdx) { dialog, which ->
+                val target = chs[which]
+                seekTo(target.timeMs)
+                showHint("跳转章节: ${target.title}")
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
 
     private fun checkAutoSkip() {
         if (mpv == null || paused || !fileLoaded || currentIndex !in queue.indices) return
         val pos = posMs
         val dur = durMs
         if (dur <= 0) return
+        val p = queue.getOrNull(currentIndex)
         skipController.checkAutoSkip(
             posMs = pos,
             durMs = dur,
             currentIndex = currentIndex,
             queueSize = queue.size,
+            seriesKey = p?.seriesKey,
             onSeek = { seekTo(it) },
             onNextEpisode = { playIndex(currentIndex + 1) },
             showHint = { showHint(it) },
+            onIntroSkipped = { fromPos, _ ->
+                showUndoCapsule(fromPos)
+            },
         )
     }
 
@@ -775,7 +862,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             override fun onScrubMove(timeBar: TimeBar, position: Long) { posView.text = fmt(position) }
             override fun onScrubStop(timeBar: TimeBar, position: Long, canceled: Boolean) {
                 scrubbing = false
-                if (!canceled) seekTo(position)
+                if (!canceled) {
+                    seekTo(position)
+                    hideUndoCapsule()
+                }
                 bumpControls()
             }
         })
@@ -817,6 +907,47 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             marginEnd = dp(16)
             bottomMargin = dp(84)
         })
+
+        undoCapsuleView = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xE6212121.toInt())
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), 0x55FFFFFF.toInt())
+            }
+            setPadding(dp(12), dp(6), dp(10), dp(6))
+            elevation = dp(6).toFloat()
+            visibility = View.GONE
+
+            val tv = TextView(this@MpvPlayerActivity).apply {
+                text = "⏪ 已跳过片头 · 撤销"
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            addView(tv)
+
+            val closeBtn = TextView(this@MpvPlayerActivity).apply {
+                text = "✕"
+                setTextColor(0xAAFFFFFF.toInt())
+                textSize = 14f
+                setPadding(dp(8), 0, dp(4), 0)
+                setOnClickListener { hideUndoCapsule() }
+            }
+            addView(closeBtn)
+
+            setOnClickListener {
+                val target = undoFromPosMs
+                hideUndoCapsule()
+                seekTo(target)
+                showHint("已恢复片头播放")
+            }
+        }
+        val undoLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START)
+        undoLp.marginStart = dp(16)
+        undoLp.bottomMargin = dp(84)
+        findViewById<FrameLayout>(R.id.mpv_root).addView(undoCapsuleView, undoLp)
 
         attachGestures()
     }
@@ -1252,11 +1383,12 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private fun showSettingsMenu(anchor: View) {
         val portrait = PlayerOrientation.isPortrait(this)
         if (portrait) {
-            // Portrait gear holds exactly the folded buttons: 字幕 / 上一集 / 下一集 / 音频增强 / 防误触.
+            // Portrait gear holds exactly the folded buttons: 字幕 / 上一集 / 下一集 / 章节 / 跳过 / 音频增强 / 防误触.
             val items = ArrayList<IconMenu.Item>()
             items += IconMenu.Item(R.drawable.ic_subtitle, "字幕") { showTrackMenu("sub", anchor) }
             if (currentIndex > 0) items += IconMenu.Item(R.drawable.ic_prev, "上一集") { playIndex(currentIndex - 1) }
             if (currentIndex + 1 < queue.size) items += IconMenu.Item(R.drawable.ic_next, "下一集") { playIndex(currentIndex + 1) }
+            if (skipController.chapters.isNotEmpty()) items += IconMenu.Item(R.drawable.ic_view_list, "章节(${skipController.chapters.size})") { showChapterDialog() }
             items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
             items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
             items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog() }
@@ -1273,6 +1405,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             mpv?.setPropertyString("hwdec", if (Repo.store.mpvHwdec) "mediacodec-copy" else "no")
             showHint(if (Repo.store.mpvHwdec) "硬件解码" else "软件解码")
         }
+        if (skipController.chapters.isNotEmpty()) items += IconMenu.Item(R.drawable.ic_view_list, "章节(${skipController.chapters.size})") { showChapterDialog() }
         items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog() }
@@ -1282,22 +1415,29 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     /** 跳过片头：弹窗里直接调秒数（即时保存），点跳过执行。 */
     private fun showSkipIntroPopup(anchor: View) {
+        val p = queue.getOrNull(currentIndex)
         skipController.showSkipIntroPopup(
             anchor = anchor,
             currentPosMs = (posSec * 1000).toLong(),
             currentIndex = currentIndex,
+            seriesKey = p?.seriesKey,
             onSeek = { seekTo(it) },
             showHint = { showHint(it) },
             toast = { toast(it) },
+            onIntroSkipped = { fromPos, _ ->
+                showUndoCapsule(fromPos)
+            },
         )
     }
 
     /** 跳过片尾：弹窗里直接调秒数（即时保存），有下一集播下一集，否则跳到片尾结束。 */
     private fun showSkipOutroPopup(anchor: View) {
+        val p = queue.getOrNull(currentIndex)
         skipController.showSkipOutroPopup(
             anchor = anchor,
             durMs = (durSec * 1000).toLong(),
             currentIndex = currentIndex,
+            seriesKey = p?.seriesKey,
             hasNext = currentIndex + 1 < queue.size,
             onNext = { playIndex(currentIndex + 1) },
             onSeekEnd = { seekTo(it) },
@@ -1517,7 +1657,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                         longPressActive = false
                         mpv?.setPropertyDouble("speed", speedBeforeLongPress)
                     }
-                    if (drag == Drag.SEEK) seekTo(targetPos)
+                    if (drag == Drag.SEEK) {
+                        seekTo(targetPos)
+                        hideUndoCapsule()
+                    }
                     drag = Drag.NONE
                     handler.postDelayed(hideHint, 400)
                 }

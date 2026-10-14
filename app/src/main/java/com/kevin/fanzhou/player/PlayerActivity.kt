@@ -44,6 +44,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Metadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -51,6 +52,9 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.extractor.metadata.id3.ChapterFrame
+import androidx.media3.extractor.metadata.id3.TextInformationFrame
+import androidx.media3.ui.DefaultTimeBar
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -334,6 +338,14 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_subtitle)?.setOnClickListener { v -> showTextTrackMenu(v) }
         updateSpeedLabel()
 
+        playerView.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.addListener(object : androidx.media3.ui.TimeBar.OnScrubListener {
+            override fun onScrubStart(timeBar: androidx.media3.ui.TimeBar, position: Long) {}
+            override fun onScrubMove(timeBar: androidx.media3.ui.TimeBar, position: Long) {}
+            override fun onScrubStop(timeBar: androidx.media3.ui.TimeBar, position: Long, canceled: Boolean) {
+                if (!canceled) hideUndoCapsule()
+            }
+        })
+
         hintView = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 18f
@@ -382,6 +394,50 @@ class PlayerActivity : ComponentActivity() {
         bubbleLp.marginEnd = dp(16)
         bubbleLp.bottomMargin = dp(84)
         root.addView(subBubbleView, bubbleLp)
+
+        undoCapsuleView = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xE6212121.toInt())
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), 0x55FFFFFF.toInt())
+            }
+            setPadding(dp(12), dp(6), dp(10), dp(6))
+            elevation = dp(6).toFloat()
+            visibility = View.GONE
+
+            val tv = TextView(this@PlayerActivity).apply {
+                text = "⏪ 已跳过片头 · 撤销"
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            addView(tv)
+
+            val closeBtn = TextView(this@PlayerActivity).apply {
+                text = "✕"
+                setTextColor(0xAAFFFFFF.toInt())
+                textSize = 14f
+                setPadding(dp(8), 0, dp(4), 0)
+                setOnClickListener { hideUndoCapsule() }
+            }
+            addView(closeBtn)
+
+            setOnClickListener {
+                val target = undoFromPosMs
+                hideUndoCapsule()
+                if (::player.isInitialized) {
+                    player.seekTo(target)
+                    showHint("已恢复片头播放")
+                }
+            }
+        }
+        val undoLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START)
+        undoLp.marginStart = dp(16)
+        undoLp.bottomMargin = dp(84)
+        root.addView(undoCapsuleView, undoLp)
+
         setContentView(root)
         attachGestures()
     }
@@ -495,7 +551,10 @@ class PlayerActivity : ComponentActivity() {
                         longPressSpeedActive = false
                         player.playbackParameters = PlaybackParameters(speedBeforeLongPress)
                     }
-                    if (drag == Drag.SEEK) player.seekTo(targetPos)
+                    if (drag == Drag.SEEK) {
+                        player.seekTo(targetPos)
+                        hideUndoCapsule()
+                    }
                     drag = Drag.NONE
                     handler.postDelayed(hideHint, 400)
                 }
@@ -659,22 +718,88 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    private var undoCapsuleView: View? = null
+    private var undoFromPosMs: Long = 0L
+
+    private val dismissUndoCapsule = Runnable {
+        undoCapsuleView?.animate()?.alpha(0f)?.setDuration(300)?.withEndAction {
+            undoCapsuleView?.visibility = View.GONE
+        }
+    }
+
+    private fun showUndoCapsule(fromPosMs: Long) {
+        val v = undoCapsuleView ?: return
+        undoFromPosMs = fromPosMs
+        handler.removeCallbacks(dismissUndoCapsule)
+        v.alpha = 0f
+        v.visibility = View.VISIBLE
+        v.animate().alpha(1f).setDuration(200).start()
+        handler.postDelayed(dismissUndoCapsule, 5000)
+    }
+
+    private fun hideUndoCapsule() {
+        handler.removeCallbacks(dismissUndoCapsule)
+        undoCapsuleView?.visibility = View.GONE
+    }
+
+    private fun updateChapterMarkers() {
+        val timeBar = playerView.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress) ?: return
+        val chs = skipController.chapters
+        if (chs.isEmpty()) {
+            timeBar.setAdGroupTimesMs(longArrayOf(), booleanArrayOf(), 0)
+            return
+        }
+        val times = chs.map { it.timeMs }.filter { it > 0 }.toLongArray()
+        val played = BooleanArray(times.size)
+        timeBar.setAdMarkerColor(0xCCFFFFFF.toInt())
+        timeBar.setPlayedAdMarkerColor(0x88FFFFFF.toInt())
+        timeBar.setAdGroupTimesMs(times, played, times.size)
+    }
+
+    private fun showChapterDialog() {
+        val chs = skipController.chapters
+        if (chs.isEmpty() || !::player.isInitialized) return
+        val curPos = player.currentPosition
+        val curIdx = chs.indexOfLast { it.timeMs <= curPos }.coerceAtLeast(0)
+        val items = chs.map { ch ->
+            val m = ch.timeMs / 1000 / 60
+            val s = (ch.timeMs / 1000) % 60
+            "%02d:%02d  %s".format(m, s, ch.title)
+        }.toTypedArray()
+
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("选择章节 (${chs.size})")
+            .setSingleChoiceItems(items, curIdx) { dialog, which ->
+                val target = chs[which]
+                player.seekTo(target.timeMs)
+                showHint("跳转章节: ${target.title}")
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun checkAutoSkip() {
         if (!::player.isInitialized || !player.isPlaying || currentIndex < 0 || currentIndex !in queue.indices) return
         val pos = player.currentPosition
         val dur = player.duration
         if (dur <= 0 || dur == C.TIME_UNSET) return
+        val p = queue.getOrNull(currentIndex)
         skipController.checkAutoSkip(
             posMs = pos,
             durMs = dur,
             currentIndex = currentIndex,
             queueSize = queue.size,
+            seriesKey = p?.seriesKey,
             onSeek = { player.seekTo(it) },
             onNextEpisode = {
                 player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
                 player.play()
             },
             showHint = { showHint(it) },
+            onIntroSkipped = { fromPos, _ ->
+                showUndoCapsule(fromPos)
+            },
         )
     }
 
@@ -907,6 +1032,9 @@ class PlayerActivity : ComponentActivity() {
                 player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play()
             }
         }
+        if (skipController.chapters.isNotEmpty()) {
+            items += IconMenu.Item(R.drawable.ic_view_list, "章节(${skipController.chapters.size})") { showChapterDialog() }
+        }
         items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog() }
@@ -933,23 +1061,30 @@ class PlayerActivity : ComponentActivity() {
 
     /** 跳过片头：弹窗里直接调秒数（即时保存），点跳过执行。 */
     private fun showSkipIntroPopup(anchor: View) {
+        val p = queue.getOrNull(currentIndex)
         skipController.showSkipIntroPopup(
             anchor = anchor,
             currentPosMs = player.currentPosition,
             currentIndex = currentIndex,
+            seriesKey = p?.seriesKey,
             onSeek = { player.seekTo(it) },
             showHint = { showHint(it) },
             toast = { toast(it) },
+            onIntroSkipped = { fromPos, _ ->
+                showUndoCapsule(fromPos)
+            },
         )
     }
 
     /** 跳过片尾：弹窗里直接调秒数（即时保存），执行跳过片尾（播放下一集或跳到片尾结束）。 */
     private fun showSkipOutroPopup(anchor: View) {
         val dur = player.duration
+        val p = queue.getOrNull(currentIndex)
         skipController.showSkipOutroPopup(
             anchor = anchor,
             durMs = if (dur == C.TIME_UNSET) 0L else dur,
             currentIndex = currentIndex,
+            seriesKey = p?.seriesKey,
             hasNext = currentIndex + 1 < queue.size,
             onNext = {
                 player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
@@ -1483,9 +1618,34 @@ class PlayerActivity : ComponentActivity() {
             val start = queue[newIndex].startMs
             if (start > 0 && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) player.seekTo(start)
             skipController.onIndexChanged(newIndex, start)
+            hideUndoCapsule()
+            updateChapterMarkers()
             smartSubPromptedIndex = -1
             hideSmartSubBubble()
             onItemStarted()
+        }
+
+        override fun onMetadata(metadata: Metadata) {
+            var added = false
+            val curChapters = skipController.chapters.toMutableList()
+            for (i in 0 until metadata.length()) {
+                val entry = metadata.get(i)
+                if (entry is ChapterFrame) {
+                    val subTitle = (0 until entry.subFrameCount).asSequence()
+                        .mapNotNull { entry.getSubFrame(it) as? TextInformationFrame }
+                        .firstOrNull()?.values?.firstOrNull() ?: entry.chapterId
+                    val timeMs = entry.startTimeMs.toLong()
+                    if (curChapters.none { it.timeMs == timeMs }) {
+                        curChapters.add(PlayerChapter(timeMs, subTitle.ifEmpty { "第 ${curChapters.size + 1} 章" }))
+                        added = true
+                    }
+                }
+            }
+            if (added) {
+                curChapters.sortBy { it.timeMs }
+                skipController.chapters = curChapters
+                updateChapterMarkers()
+            }
         }
 
         override fun onTracksChanged(tracks: Tracks) {
