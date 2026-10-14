@@ -37,6 +37,10 @@ fun SettingsScreen() {
     var outroSkip by remember { mutableIntStateOf(store.outroSkipSec) }
     var subScale by remember { mutableFloatStateOf(store.subtitleScale) }
     var subColor by remember { mutableStateOf(store.subtitleColor) }
+    var subStyle by remember { mutableStateOf(store.subtitleStyle) }
+    var subMargin by remember { mutableIntStateOf(store.subtitleBottomMargin) }
+    var voiceEnhance by remember { mutableStateOf(store.voiceEnhance) }
+    var volumeBoost by remember { mutableFloatStateOf(store.volumeBoost) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
     var gridMin by remember { mutableIntStateOf(store.gridColumnsMin) }
     var core by remember { mutableStateOf(store.playerCore) }
@@ -89,6 +93,27 @@ fun SettingsScreen() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("white" to "经典白", "yellow" to "电影黄", "cyan" to "清爽青").forEach { (k, name) ->
                         FilterChip(selected = subColor == k, onClick = { subColor = k; store.subtitleColor = k }, label = { Text(name) })
+                    }
+                }
+                Text("字幕特效：${when(subStyle) { "shadow" -> "立体投影"; "box" -> "半透明底色"; else -> "经典描边" }}", fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("outline" to "经典描边", "shadow" to "立体投影", "box" to "半透明底色").forEach { (k, name) ->
+                        FilterChip(selected = subStyle == k, onClick = { subStyle = k; store.subtitleStyle = k }, label = { Text(name) })
+                    }
+                }
+                Text("字幕底部边距：${subMargin}dp", fontSize = 14.sp)
+                Slider(subMargin.toFloat(), { subMargin = it.toInt(); store.subtitleBottomMargin = subMargin }, valueRange = 10f..60f, steps = 10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("夜间人声对白增强", fontSize = 14.sp)
+                        Text("压缩音效动态，抑制背景爆破轰鸣，突显人声", fontSize = 12.sp, color = TextDim)
+                    }
+                    Switch(voiceEnhance, { voiceEnhance = it; store.voiceEnhance = it })
+                }
+                Text("音量软放大（超出最大音量增益）：${(volumeBoost * 100).toInt()}%", fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1.0f to "100%(标准)", 1.25f to "125%", 1.5f to "150%", 2.0f to "200%").forEach { (v, name) ->
+                        FilterChip(selected = kotlin.math.abs(volumeBoost - v) < 0.05f, onClick = { volumeBoost = v; store.volumeBoost = v }, label = { Text(name) })
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {

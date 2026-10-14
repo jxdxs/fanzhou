@@ -32,6 +32,15 @@ object VideoThumbnails {
         Thread(r, "VideoThumbExtractor").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }.asCoroutineDispatcher()
 
+    fun trimMemory(level: Int) {
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            memoryCache.evictAll()
+            failedKeys.clear()
+        } else if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            memoryCache.trimToSize(memoryCache.size() / 2)
+        }
+    }
+
     fun cacheFile(context: Context, sourceId: String, fileId: String): File {
         val dir = File(context.cacheDir, "video_thumbs").apply { if (!exists()) mkdirs() }
         val hash = try {

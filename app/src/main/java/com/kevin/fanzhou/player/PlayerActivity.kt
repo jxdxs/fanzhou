@@ -11,6 +11,7 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -342,6 +343,45 @@ class PlayerActivity : ComponentActivity() {
             visibility = View.GONE
         }
         root.addView(hintView, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+
+        subBubbleView = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xE6212121.toInt())
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), 0x55FFFFFF.toInt())
+            }
+            setPadding(dp(12), dp(6), dp(10), dp(6))
+            elevation = dp(6).toFloat()
+            visibility = View.GONE
+
+            val tv = TextView(this@PlayerActivity).apply {
+                text = "💬 匹配在线中文字幕"
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            addView(tv)
+
+            val closeBtn = TextView(this@PlayerActivity).apply {
+                text = "✕"
+                setTextColor(0xAAFFFFFF.toInt())
+                textSize = 14f
+                setPadding(dp(8), 0, dp(4), 0)
+                setOnClickListener { hideSmartSubBubble() }
+            }
+            addView(closeBtn)
+
+            setOnClickListener {
+                hideSmartSubBubble()
+                showOnlineSubSearch()
+            }
+        }
+        val bubbleLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END)
+        bubbleLp.marginEnd = dp(16)
+        bubbleLp.bottomMargin = dp(84)
+        root.addView(subBubbleView, bubbleLp)
         setContentView(root)
         attachGestures()
     }
@@ -491,6 +531,7 @@ class PlayerActivity : ComponentActivity() {
             .build()
         playerView.player = player
         player.addListener(listener)
+        applyAudioBoost()
         mediaSession = MediaSession.Builder(this, player)
             .setId("FanzhouExoSession_${java.util.UUID.randomUUID()}")
             .build()
@@ -565,8 +606,7 @@ class PlayerActivity : ComponentActivity() {
         player.play()
         currentIndex = start
         val startMs = queue[start].startMs
-        introSkippedIndex = if (startMs > 5000L) start else -1
-        outroSkippedIndex = -1
+        skipController.onIndexChanged(start, startMs)
         onItemStarted()
     }
 
@@ -610,8 +650,7 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private var introSkippedIndex = -1
-    private var outroSkippedIndex = -1
+    private val skipController = PlayerSkipController()
 
     private val skipCheckTick = object : Runnable {
         override fun run() {
@@ -625,41 +664,113 @@ class PlayerActivity : ComponentActivity() {
         val pos = player.currentPosition
         val dur = player.duration
         if (dur <= 0 || dur == C.TIME_UNSET) return
+        skipController.checkAutoSkip(
+            posMs = pos,
+            durMs = dur,
+            currentIndex = currentIndex,
+            queueSize = queue.size,
+            onSeek = { player.seekTo(it) },
+            onNextEpisode = {
+                player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                player.play()
+            },
+            showHint = { showHint(it) },
+        )
+    }
 
-        // 1. 自动跳过片头
-        val introSec = Repo.store.introSkipSec
-        if (introSec > 0 && introSkippedIndex != currentIndex) {
-            val introTarget = introSec * 1000L
-            if (dur > introTarget + 30_000L) {
-                if (pos < introTarget - 2000L) {
-                    introSkippedIndex = currentIndex
-                    player.seekTo(introTarget)
-                    showHint("已跳过片头")
-                    return
-                } else {
-                    introSkippedIndex = currentIndex
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+
+    private fun applyAudioBoost() {
+        if (!::player.isInitialized) return
+        loudnessEnhancer = AudioBoost.applyExo(loudnessEnhancer, player.audioSessionId)
+    }
+
+    private fun showAudioEnhanceDialog() {
+        val boostValues = listOf(1.0f, 1.25f, 1.5f, 2.0f)
+        val boostLabels = listOf("100% (标准)", "125%", "150%", "200% (翻倍)")
+        val currentBoost = Repo.store.volumeBoost
+        val voice = Repo.store.voiceEnhance
+
+        val items = arrayOf(
+            "夜间人声对白增强: " + if (voice) "【开启】" else "【关闭】",
+            "音量软放大: " + (boostLabels.getOrNull(boostValues.indexOfFirst { kotlin.math.abs(it - currentBoost) < 0.05f }) ?: "100%")
+        )
+
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("音频增强与人声")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> {
+                        val newVal = !Repo.store.voiceEnhance
+                        Repo.store.voiceEnhance = newVal
+                        applyAudioBoost()
+                        showHint("人声增强：" + if (newVal) "开启" else "关闭")
+                    }
+                    1 -> {
+                        val sel = boostValues.indexOfFirst { kotlin.math.abs(it - Repo.store.volumeBoost) < 0.05f }.coerceAtLeast(0)
+                        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                            .setTitle("音量软放大")
+                            .setSingleChoiceItems(boostLabels.toTypedArray(), sel) { d, i ->
+                                Repo.store.volumeBoost = boostValues[i]
+                                applyAudioBoost()
+                                showHint("音量软放大：${boostLabels[i]}")
+                                d.dismiss()
+                            }
+                            .show()
+                    }
                 }
-            } else {
-                introSkippedIndex = currentIndex
+            }
+            .show()
+    }
+
+    private var subBubbleView: View? = null
+    private var smartSubPromptedIndex = -1
+
+    private fun hideSmartSubBubble() {
+        handler.removeCallbacks(dismissSmartSubBubble)
+        subBubbleView?.visibility = View.GONE
+    }
+
+    private val dismissSmartSubBubble = Runnable {
+        subBubbleView?.animate()?.alpha(0f)?.setDuration(350)?.withEndAction {
+            subBubbleView?.visibility = View.GONE
+        }
+    }
+
+    private fun showSmartSubBubble() {
+        val bubble = subBubbleView ?: return
+        handler.removeCallbacks(dismissSmartSubBubble)
+        bubble.alpha = 0f
+        bubble.visibility = View.VISIBLE
+        bubble.animate().alpha(1f).setDuration(250).start()
+        handler.postDelayed(dismissSmartSubBubble, 7000)
+    }
+
+    private fun checkSmartSubBubble() {
+        if (!com.kevin.fanzhou.subtitle.OnlineSubtitles.anyConfigured()) return
+        if (currentIndex < 0 || currentIndex == smartSubPromptedIndex) return
+        if (!::player.isInitialized) return
+        val tracks = player.currentTracks
+        val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        val hasChinese = textGroups.any { g ->
+            (0 until g.length).any { i ->
+                val f = g.getTrackFormat(i)
+                val lang = f.language?.lowercase() ?: ""
+                val label = f.label?.lowercase() ?: ""
+                lang in setOf("zh", "chi", "zho", "chs", "cht", "cmn", "yue") ||
+                    label.contains("中") || label.contains("简") || label.contains("繁") ||
+                    label.contains("chs") || label.contains("cht") || label.contains("chinese")
             }
         }
+        val p = queue.getOrNull(currentIndex)
+        val hasExtChinese = p?.subtitles?.any { s ->
+            val t = (s.label + " " + (s.lang ?: "")).lowercase()
+            t.contains("zh") || t.contains("chi") || t.contains("中") || t.contains("简") || t.contains("繁")
+        } == true
 
-        // 2. 自动跳过片尾
-        val outroSec = Repo.store.outroSkipSec
-        if (outroSec > 0 && outroSkippedIndex != currentIndex) {
-            val outroTarget = dur - outroSec * 1000L
-            val minOutro = (introSec * 1000L) + 10_000L
-            if (outroTarget > minOutro && pos >= outroTarget) {
-                outroSkippedIndex = currentIndex
-                if (currentIndex + 1 < queue.size) {
-                    player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
-                    player.play()
-                    showHint("已跳过片尾，播放下一集")
-                } else {
-                    player.seekTo(maxOf(0L, dur - 1000L))
-                    showHint("已跳过片尾")
-                }
-            }
+        if (!hasChinese && !hasExtChinese) {
+            smartSubPromptedIndex = currentIndex
+            showSmartSubBubble()
         }
     }
 
@@ -798,6 +909,7 @@ class PlayerActivity : ComponentActivity() {
         }
         items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
+        items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog() }
         if (!PlayerOrientation.isPortrait(this)) {
             items += IconMenu.Item(R.drawable.ic_shuffle, "随机", active = player.shuffleModeEnabled) {
                 player.shuffleModeEnabled = !player.shuffleModeEnabled
@@ -821,49 +933,31 @@ class PlayerActivity : ComponentActivity() {
 
     /** 跳过片头：弹窗里直接调秒数（即时保存），点跳过执行。 */
     private fun showSkipIntroPopup(anchor: View) {
-        SkipPopup.show(
-            anchor, "跳过片头", Repo.store.introSkipSec, 0, 180,
-            onSecChanged = { Repo.store.introSkipSec = it },
-            onSkip = { sec ->
-                if (sec <= 0) {
-                    showHint("已关闭跳过片头")
-                    return@show
-                }
-                val target = sec * 1000L
-                if (player.currentPosition < target - 2000) {
-                    introSkippedIndex = currentIndex
-                    player.seekTo(target)
-                    showHint("已跳过片头")
-                } else toast("当前进度已超过片头（${sec}秒）")
-            },
+        skipController.showSkipIntroPopup(
+            anchor = anchor,
+            currentPosMs = player.currentPosition,
+            currentIndex = currentIndex,
+            onSeek = { player.seekTo(it) },
+            showHint = { showHint(it) },
+            toast = { toast(it) },
         )
     }
 
     /** 跳过片尾：弹窗里直接调秒数（即时保存），执行跳过片尾（播放下一集或跳到片尾结束）。 */
     private fun showSkipOutroPopup(anchor: View) {
-        SkipPopup.show(
-            anchor, "跳过片尾", Repo.store.outroSkipSec, 0, 300,
-            onSecChanged = { Repo.store.outroSkipSec = it },
-            onSkip = { sec ->
-                if (sec <= 0) {
-                    showHint("已关闭跳过片尾")
-                    return@show
-                }
-                val dur = player.duration
-                if (dur == C.TIME_UNSET || dur <= 0) toast("无法跳过片尾")
-                else {
-                    outroSkippedIndex = currentIndex
-                    if (currentIndex + 1 < queue.size) {
-                        player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
-                        player.play()
-                        showHint("已跳过片尾，播放下一集")
-                    } else {
-                        val target = maxOf(0L, dur - 2000L)
-                        player.seekTo(target)
-                        showHint("已跳过片尾")
-                    }
-                }
+        val dur = player.duration
+        skipController.showSkipOutroPopup(
+            anchor = anchor,
+            durMs = if (dur == C.TIME_UNSET) 0L else dur,
+            currentIndex = currentIndex,
+            hasNext = currentIndex + 1 < queue.size,
+            onNext = {
+                player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                player.play()
             },
+            onSeekEnd = { player.seekTo(it) },
+            showHint = { showHint(it) },
+            toast = { toast(it) },
         )
     }
 
@@ -925,15 +1019,39 @@ class PlayerActivity : ComponentActivity() {
             "cyan" -> android.graphics.Color.parseColor("#00FFFF")
             else -> android.graphics.Color.WHITE
         }
-        val style = androidx.media3.ui.CaptionStyleCompat(
-            textColor,
-            android.graphics.Color.TRANSPARENT,
-            android.graphics.Color.TRANSPARENT,
-            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-            android.graphics.Color.BLACK,
-            null
-        )
+        val style = when (Repo.store.subtitleStyle) {
+            "shadow" -> androidx.media3.ui.CaptionStyleCompat(
+                textColor,
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+                androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
+                android.graphics.Color.BLACK,
+                null
+            )
+            "box" -> androidx.media3.ui.CaptionStyleCompat(
+                textColor,
+                android.graphics.Color.argb(160, 0, 0, 0),
+                android.graphics.Color.TRANSPARENT,
+                androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_NONE,
+                android.graphics.Color.BLACK,
+                null
+            )
+            else -> androidx.media3.ui.CaptionStyleCompat(
+                textColor,
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+                androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                android.graphics.Color.BLACK,
+                null
+            )
+        }
         subView.setStyle(style)
+
+        val marginDp = Repo.store.subtitleBottomMargin
+        val density = resources.displayMetrics.density
+        val height = resources.displayMetrics.heightPixels.coerceAtLeast(1)
+        val fraction = (marginDp * density) / height
+        subView.setBottomPaddingFraction(fraction.coerceIn(0.02f, 0.25f))
     }
 
     private val subScaleOptions = listOf(
@@ -956,6 +1074,25 @@ class PlayerActivity : ComponentActivity() {
 
     private fun subColorLabel(c: String) =
         subColorOptions.firstOrNull { it.first == c }?.second?.substringBefore(" ") ?: "经典白"
+
+    private val subStyleOptions = listOf(
+        "outline" to "经典描边 (黑边包裹)",
+        "shadow" to "立体投影 (悬浮阴影)",
+        "box" to "半透明底色 (深色衬底)"
+    )
+
+    private fun subStyleLabel(s: String) =
+        subStyleOptions.firstOrNull { it.first == s }?.second?.substringBefore(" ") ?: "经典描边"
+
+    private val subMarginOptions = listOf(
+        10 to "贴近底部 (10dp)",
+        20 to "标准居中 (20dp)",
+        35 to "略微偏高 (35dp)",
+        50 to "较高位置 (50dp)"
+    )
+
+    private fun subMarginLabel(m: Int) =
+        subMarginOptions.firstOrNull { it.first == m }?.second?.substringBefore(" ") ?: "${m}dp"
 
     private fun showSubtitleScaleDialog() {
         val cur = Repo.store.subtitleScale
@@ -987,10 +1124,42 @@ class PlayerActivity : ComponentActivity() {
             .show()
     }
 
+    private fun showSubtitleEffectDialog() {
+        val cur = Repo.store.subtitleStyle
+        val sel = subStyleOptions.indexOfFirst { it.first == cur }.coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕特效")
+            .setSingleChoiceItems(subStyleOptions.map { it.second }.toTypedArray(), sel) { d, which ->
+                val chosen = subStyleOptions[which].first
+                Repo.store.subtitleStyle = chosen
+                applySubtitleStyle()
+                showHint("字幕特效：${subStyleOptions[which].second.substringBefore(" ")}")
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun showSubtitleMarginDialog() {
+        val cur = Repo.store.subtitleBottomMargin
+        val sel = subMarginOptions.indexOfFirst { it.first == cur }.coerceAtLeast(0)
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("字幕底部边距")
+            .setSingleChoiceItems(subMarginOptions.map { it.second }.toTypedArray(), sel) { d, which ->
+                val chosen = subMarginOptions[which].first
+                Repo.store.subtitleBottomMargin = chosen
+                applySubtitleStyle()
+                showHint("底部边距：${subMarginOptions[which].second}")
+                d.dismiss()
+            }
+            .show()
+    }
+
     private fun showSubtitleStyleDialog() {
         val items = arrayOf(
             "字幕大小（${subScaleLabel(Repo.store.subtitleScale)}）…",
-            "字幕颜色（${subColorLabel(Repo.store.subtitleColor)}）…"
+            "字幕颜色（${subColorLabel(Repo.store.subtitleColor)}）…",
+            "字幕特效（${subStyleLabel(Repo.store.subtitleStyle)}）…",
+            "底部边距（${subMarginLabel(Repo.store.subtitleBottomMargin)}）…"
         )
         android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("字幕大小与样式")
@@ -998,6 +1167,8 @@ class PlayerActivity : ComponentActivity() {
                 when (which) {
                     0 -> showSubtitleScaleDialog()
                     1 -> showSubtitleColorDialog()
+                    2 -> showSubtitleEffectDialog()
+                    3 -> showSubtitleMarginDialog()
                 }
             }
             .show()
@@ -1311,8 +1482,9 @@ class PlayerActivity : ComponentActivity() {
             PlayQueue.index = newIndex
             val start = queue[newIndex].startMs
             if (start > 0 && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) player.seekTo(start)
-            introSkippedIndex = if (start > 5000L) newIndex else -1
-            outroSkippedIndex = -1
+            skipController.onIndexChanged(newIndex, start)
+            smartSubPromptedIndex = -1
+            hideSmartSubBubble()
             onItemStarted()
         }
 
@@ -1331,6 +1503,11 @@ class PlayerActivity : ComponentActivity() {
                 selectOnlineSubtitleTrack(tracks)
             }
             updateSubtitleButton()
+            checkSmartSubBubble()
+        }
+
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            applyAudioBoost()
         }
 
         override fun onTrackSelectionParametersChanged(parameters: androidx.media3.common.TrackSelectionParameters) {
@@ -1676,6 +1853,8 @@ class PlayerActivity : ComponentActivity() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         ScreenLock.release(this)
+        try { loudnessEnhancer?.release() } catch (_: Throwable) {}
+        loudnessEnhancer = null
         mediaSession?.release()
         mediaSession = null
         if (::player.isInitialized) {

@@ -108,6 +108,26 @@ class Store(context: Context) {
         get() = prefs.getString("subtitle_color", "white") ?: "white"
         set(v) { prefs.edit().putString("subtitle_color", v).apply() }
 
+    /** 字幕样式: "outline" (经典描边), "shadow" (立体投影), "box" (半透明底色). 默认 "outline" */
+    var subtitleStyle: String
+        get() = prefs.getString("subtitle_style", "outline") ?: "outline"
+        set(v) { prefs.edit().putString("subtitle_style", v).apply() }
+
+    /** 字幕底部垂直边距 dp (默认 20). */
+    var subtitleBottomMargin: Int
+        get() = prefs.getInt("subtitle_bottom_margin", 20)
+        set(v) { prefs.edit().putInt("subtitle_bottom_margin", v).apply() }
+
+    /** 夜间人声对白增强（压缩音效动态范围，让人声清晰） */
+    var voiceEnhance: Boolean
+        get() = prefs.getBoolean("voice_enhance", false)
+        set(v) { prefs.edit().putBoolean("voice_enhance", v).apply() }
+
+    /** 音量软放大增益：1.0f (标准 100%), 1.25f (125%), 1.5f (150%), 2.0f (200%). 默认 1.0f */
+    var volumeBoost: Float
+        get() = prefs.getFloat("volume_boost", 1.0f)
+        set(v) { prefs.edit().putFloat("volume_boost", v).apply() }
+
     var folderSort: String
         get() = prefs.getString("folder_sort", "name") ?: "name"
         set(v) { prefs.edit().putString("folder_sort", v).apply() }

@@ -266,7 +266,9 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
 
     LaunchedEffect(entries) {
         val list = entries ?: return@LaunchedEffect
-        val vids = list.filter { it.isVideo && it.thumb == null }
+        // Prefetch only the first screen (16 items) to avoid overloading network & memory.
+        // Offscreen items will be lazily extracted when scrolled into view.
+        val vids = list.filter { it.isVideo && it.thumb == null }.take(16)
         if (vids.isNotEmpty()) {
             vids.forEach { f ->
                 launch {

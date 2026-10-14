@@ -14,6 +14,11 @@ class App : Application(), ImageLoaderFactory {
         com.kevin.fanzhou.data.ConfigSync.init(this)
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.kevin.fanzhou.cloud.VideoThumbnails.trimMemory(level)
+    }
+
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .okHttpClient(Repo.http)
         .crossfade(true)
