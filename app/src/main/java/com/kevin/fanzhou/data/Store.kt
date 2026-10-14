@@ -88,12 +88,12 @@ class Store(context: Context) {
         get() = prefs.getBoolean("mpv_hwdec", true)
         set(v) { prefs.edit().putBoolean("mpv_hwdec", v).apply() }
 
-    /** 跳过片头：一键跳到该秒数（默认 90 秒）。 */
+    /** 跳过片头：自动/手动跳过片头秒数（默认 90 秒，0 为关闭）。 */
     var introSkipSec: Int
         get() = prefs.getInt("intro_skip_sec", 90)
         set(v) { prefs.edit().putInt("intro_skip_sec", v).apply() }
 
-    /** 跳过片尾：从当前位置向前跳过该秒数（默认 90 秒）。 */
+    /** 跳过片尾：自动/手动跳过片尾秒数（默认 90 秒，0 为关闭）。 */
     var outroSkipSec: Int
         get() = prefs.getInt("outro_skip_sec", 90)
         set(v) { prefs.edit().putInt("outro_skip_sec", v).apply() }

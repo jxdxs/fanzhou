@@ -334,6 +334,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
         posSec = p.startMs / 1000.0
         durSec = 0.0
+        introSkippedIndex = if (p.startMs > 5000L) i else -1
+        outroSkippedIndex = -1
         updateMediaSessionMetadata(p)
         updateMediaSessionState()
         load(p, p.startMs)
@@ -417,6 +419,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val p = queue.getOrNull(currentIndex) ?: return
         updateMediaSessionMetadata(p)
         updateMediaSessionState()
+        checkAutoSkip()
         attachSavedSub(p)
         // External subtitles (sibling files / Jellyfin / cloud).
         p.subtitles.forEach { s ->
@@ -549,6 +552,51 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
     }
 
+    private var introSkippedIndex = -1
+    private var outroSkippedIndex = -1
+
+    private fun checkAutoSkip() {
+        if (mpv == null || paused || !fileLoaded || currentIndex !in queue.indices) return
+        val pos = posMs
+        val dur = durMs
+        if (dur <= 0) return
+
+        // 1. 自动跳过片头
+        val introSec = Repo.store.introSkipSec
+        if (introSec > 0 && introSkippedIndex != currentIndex) {
+            val introTarget = introSec * 1000L
+            if (dur > introTarget + 30_000L) {
+                if (pos < introTarget - 2000L) {
+                    introSkippedIndex = currentIndex
+                    seekTo(introTarget)
+                    showHint("已跳过片头")
+                    return
+                } else {
+                    introSkippedIndex = currentIndex
+                }
+            } else {
+                introSkippedIndex = currentIndex
+            }
+        }
+
+        // 2. 自动跳过片尾
+        val outroSec = Repo.store.outroSkipSec
+        if (outroSec > 0 && outroSkippedIndex != currentIndex) {
+            val outroTarget = dur - outroSec * 1000L
+            val minOutro = (introSec * 1000L) + 10_000L
+            if (outroTarget > minOutro && pos >= outroTarget) {
+                outroSkippedIndex = currentIndex
+                if (currentIndex + 1 < queue.size) {
+                    playIndex(currentIndex + 1)
+                    showHint("已跳过片尾，播放下一集")
+                } else {
+                    seekTo(maxOf(0L, dur - 1000L))
+                    showHint("已跳过片尾")
+                }
+            }
+        }
+    }
+
     private val uiTick = object : Runnable {
         override fun run() {
             if (!scrubbing) {
@@ -558,6 +606,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 posView.text = fmt(posMs)
                 durView.text = fmt(durMs)
                 updateMediaSessionState()
+                checkAutoSkip()
             }
             handler.postDelayed(this, 500)
         }
@@ -1037,32 +1086,45 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     /** 跳过片头：弹窗里直接调秒数（即时保存），点跳过执行。 */
     private fun showSkipIntroPopup(anchor: View) {
         SkipPopup.show(
-            anchor, "跳过片头", Repo.store.introSkipSec, 10, 180,
+            anchor, "跳过片头", Repo.store.introSkipSec, 0, 180,
             onSecChanged = { Repo.store.introSkipSec = it },
             onSkip = { sec ->
+                if (sec <= 0) {
+                    showHint("已关闭跳过片头")
+                    return@show
+                }
                 val target = sec * 1000L
                 if (posSec * 1000 < target - 2000) {
+                    introSkippedIndex = currentIndex
                     seekTo(target)
                     showHint("已跳过片头")
-                } else toast("已过片头")
+                } else toast("当前进度已超过片头（${sec}秒）")
             },
         )
     }
 
-    /** 跳过片尾：弹窗里直接调秒数（即时保存），从当前位置向前跳过该秒数。 */
+    /** 跳过片尾：弹窗里直接调秒数（即时保存），有下一集播下一集，否则跳到片尾结束。 */
     private fun showSkipOutroPopup(anchor: View) {
         SkipPopup.show(
-            anchor, "跳过片尾", Repo.store.outroSkipSec, 10, 300,
+            anchor, "跳过片尾", Repo.store.outroSkipSec, 0, 300,
             onSecChanged = { Repo.store.outroSkipSec = it },
             onSkip = { sec ->
-                val durMs = (durSec * 1000).toLong()
-                if (durMs <= 0) toast("无法跳过片尾")
+                if (sec <= 0) {
+                    showHint("已关闭跳过片尾")
+                    return@show
+                }
+                val dur = durMs
+                if (dur <= 0) toast("无法跳过片尾")
                 else {
-                    val target = minOf(durMs - 2000, (posSec * 1000).toLong() + sec * 1000L).coerceAtLeast(0)
-                    if (target > posSec * 1000) {
+                    outroSkippedIndex = currentIndex
+                    if (currentIndex + 1 < queue.size) {
+                        playIndex(currentIndex + 1)
+                        showHint("已跳过片尾，播放下一集")
+                    } else {
+                        val target = maxOf(0L, dur - 2000L)
                         seekTo(target)
                         showHint("已跳过片尾")
-                    } else toast("已在结尾")
+                    }
                 }
             },
         )

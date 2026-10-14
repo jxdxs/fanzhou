@@ -72,15 +72,17 @@ fun SettingsScreen() {
                     Switch(hwdec, { hwdec = it; store.mpvHwdec = it })
                 }
             }
-            Group("播放", "${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒 · 片头 ${introSkip} 秒 · 片尾 ${outroSkip} 秒" + if (autoNext) " · 自动下一集" else "") {
+            val introText = if (introSkip == 0) "片头关" else "片头 ${introSkip} 秒"
+            val outroText = if (outroSkip == 0) "片尾关" else "片尾 ${outroSkip} 秒"
+            Group("播放", "${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒 · $introText · $outroText" + if (autoNext) " · 自动下一集" else "") {
                 Text("默认倍速：${"%.2f".format(speed).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(speed, { speed = (Math.round(it * 4) / 4f); store.defaultSpeed = speed }, valueRange = 0.5f..3f, steps = 9)
                 Text("双击快进/快退：${step} 秒", fontSize = 14.sp)
                 Slider(step.toFloat(), { step = it.toInt(); store.seekStepSec = step }, valueRange = 5f..60f, steps = 10)
-                Text("跳过片头：${introSkip} 秒", fontSize = 14.sp)
-                Slider(introSkip.toFloat(), { introSkip = it.toInt(); store.introSkipSec = introSkip }, valueRange = 10f..180f, steps = 33)
-                Text("跳过片尾：${outroSkip} 秒", fontSize = 14.sp)
-                Slider(outroSkip.toFloat(), { outroSkip = it.toInt(); store.outroSkipSec = outroSkip }, valueRange = 10f..300f, steps = 57)
+                Text("跳过片头：${if (introSkip == 0) "关闭" else "${introSkip} 秒"}", fontSize = 14.sp)
+                Slider(introSkip.toFloat(), { introSkip = (Math.round(it / 5) * 5).toInt(); store.introSkipSec = introSkip }, valueRange = 0f..180f, steps = 35)
+                Text("跳过片尾：${if (outroSkip == 0) "关闭" else "${outroSkip} 秒"}", fontSize = 14.sp)
+                Slider(outroSkip.toFloat(), { outroSkip = (Math.round(it / 5) * 5).toInt(); store.outroSkipSec = outroSkip }, valueRange = 0f..300f, steps = 59)
                 Text("字幕大小：${"%.2f".format(subScale).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(subScale, { subScale = (Math.round(it * 20) / 20f); store.subtitleScale = subScale }, valueRange = 0.8f..2.2f, steps = 13)
                 Text("字幕颜色：${when(subColor) { "yellow" -> "电影黄"; "cyan" -> "清爽青"; else -> "经典白" }}", fontSize = 14.sp)

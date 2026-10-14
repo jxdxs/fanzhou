@@ -59,7 +59,11 @@ object SkipPopup {
             gravity = Gravity.CENTER
             setPadding(0, dp(4), 0, dp(4))
         }
-        fun refresh() { label.text = "$sec 秒" }
+        var confirmBtn: TextView? = null
+        fun refresh() {
+            label.text = if (sec <= 0) "关闭" else "$sec 秒"
+            confirmBtn?.text = if (sec <= 0) "确定" else "跳过"
+        }
         refresh()
         val stepper = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -96,7 +100,8 @@ object SkipPopup {
             isFocusable = true
             setOnClickListener { onTap() }
         }
-        actions.addView(actionBtn("跳过", Color.WHITE) { popup.dismiss(); onSkip(sec) })
+        confirmBtn = actionBtn(if (sec <= 0) "确定" else "跳过", Color.WHITE) { popup.dismiss(); onSkip(sec) }
+        actions.addView(confirmBtn)
         actions.addView(actionBtn("取消", Color.GRAY) { popup.dismiss() })
         panel.addView(actions)
 

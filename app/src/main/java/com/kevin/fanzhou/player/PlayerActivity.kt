@@ -496,6 +496,7 @@ class PlayerActivity : ComponentActivity() {
             .build()
         startQueue()
         handler.postDelayed(progressTick, 10_000)
+        handler.postDelayed(skipCheckTick, 500)
     }
 
     private fun mediaSourceFactory(headers: Map<String, String>): DefaultMediaSourceFactory {
@@ -563,6 +564,9 @@ class PlayerActivity : ComponentActivity() {
         player.prepare()
         player.play()
         currentIndex = start
+        val startMs = queue[start].startMs
+        introSkippedIndex = if (startMs > 5000L) start else -1
+        outroSkippedIndex = -1
         onItemStarted()
     }
 
@@ -603,6 +607,59 @@ class PlayerActivity : ComponentActivity() {
             if (::player.isInitialized && player.isPlaying && currentIndex >= 0)
                 saveProgress(currentIndex, player.currentPosition, player.duration, stopped = false)
             handler.postDelayed(this, 10_000)
+        }
+    }
+
+    private var introSkippedIndex = -1
+    private var outroSkippedIndex = -1
+
+    private val skipCheckTick = object : Runnable {
+        override fun run() {
+            checkAutoSkip()
+            handler.postDelayed(this, 500)
+        }
+    }
+
+    private fun checkAutoSkip() {
+        if (!::player.isInitialized || !player.isPlaying || currentIndex < 0 || currentIndex !in queue.indices) return
+        val pos = player.currentPosition
+        val dur = player.duration
+        if (dur <= 0 || dur == C.TIME_UNSET) return
+
+        // 1. 自动跳过片头
+        val introSec = Repo.store.introSkipSec
+        if (introSec > 0 && introSkippedIndex != currentIndex) {
+            val introTarget = introSec * 1000L
+            if (dur > introTarget + 30_000L) {
+                if (pos < introTarget - 2000L) {
+                    introSkippedIndex = currentIndex
+                    player.seekTo(introTarget)
+                    showHint("已跳过片头")
+                    return
+                } else {
+                    introSkippedIndex = currentIndex
+                }
+            } else {
+                introSkippedIndex = currentIndex
+            }
+        }
+
+        // 2. 自动跳过片尾
+        val outroSec = Repo.store.outroSkipSec
+        if (outroSec > 0 && outroSkippedIndex != currentIndex) {
+            val outroTarget = dur - outroSec * 1000L
+            val minOutro = (introSec * 1000L) + 10_000L
+            if (outroTarget > minOutro && pos >= outroTarget) {
+                outroSkippedIndex = currentIndex
+                if (currentIndex + 1 < queue.size) {
+                    player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                    player.play()
+                    showHint("已跳过片尾，播放下一集")
+                } else {
+                    player.seekTo(maxOf(0L, dur - 1000L))
+                    showHint("已跳过片尾")
+                }
+            }
         }
     }
 
@@ -765,32 +822,46 @@ class PlayerActivity : ComponentActivity() {
     /** 跳过片头：弹窗里直接调秒数（即时保存），点跳过执行。 */
     private fun showSkipIntroPopup(anchor: View) {
         SkipPopup.show(
-            anchor, "跳过片头", Repo.store.introSkipSec, 10, 180,
+            anchor, "跳过片头", Repo.store.introSkipSec, 0, 180,
             onSecChanged = { Repo.store.introSkipSec = it },
             onSkip = { sec ->
+                if (sec <= 0) {
+                    showHint("已关闭跳过片头")
+                    return@show
+                }
                 val target = sec * 1000L
                 if (player.currentPosition < target - 2000) {
+                    introSkippedIndex = currentIndex
                     player.seekTo(target)
                     showHint("已跳过片头")
-                } else toast("已过片头")
+                } else toast("当前进度已超过片头（${sec}秒）")
             },
         )
     }
 
-    /** 跳过片尾：弹窗里直接调秒数（即时保存），从当前位置向前跳过该秒数。 */
+    /** 跳过片尾：弹窗里直接调秒数（即时保存），执行跳过片尾（播放下一集或跳到片尾结束）。 */
     private fun showSkipOutroPopup(anchor: View) {
         SkipPopup.show(
-            anchor, "跳过片尾", Repo.store.outroSkipSec, 10, 300,
+            anchor, "跳过片尾", Repo.store.outroSkipSec, 0, 300,
             onSecChanged = { Repo.store.outroSkipSec = it },
             onSkip = { sec ->
+                if (sec <= 0) {
+                    showHint("已关闭跳过片尾")
+                    return@show
+                }
                 val dur = player.duration
                 if (dur == C.TIME_UNSET || dur <= 0) toast("无法跳过片尾")
                 else {
-                    val target = minOf(dur - 2000, player.currentPosition + sec * 1000L).coerceAtLeast(0)
-                    if (target > player.currentPosition) {
+                    outroSkippedIndex = currentIndex
+                    if (currentIndex + 1 < queue.size) {
+                        player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                        player.play()
+                        showHint("已跳过片尾，播放下一集")
+                    } else {
+                        val target = maxOf(0L, dur - 2000L)
                         player.seekTo(target)
                         showHint("已跳过片尾")
-                    } else toast("已在结尾")
+                    }
                 }
             },
         )
@@ -1226,8 +1297,9 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            if (playbackState == Player.STATE_READY && pendingOnlineSubLabel != null) {
-                selectOnlineSubtitleTrack()
+            if (playbackState == Player.STATE_READY) {
+                if (pendingOnlineSubLabel != null) selectOnlineSubtitleTrack()
+                checkAutoSkip()
             }
         }
 
@@ -1239,6 +1311,8 @@ class PlayerActivity : ComponentActivity() {
             PlayQueue.index = newIndex
             val start = queue[newIndex].startMs
             if (start > 0 && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) player.seekTo(start)
+            introSkippedIndex = if (start > 5000L) newIndex else -1
+            outroSkippedIndex = -1
             onItemStarted()
         }
 
