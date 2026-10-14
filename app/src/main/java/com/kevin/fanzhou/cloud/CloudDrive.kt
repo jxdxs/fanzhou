@@ -106,6 +106,7 @@ abstract class CloudDrive(var source: Source) {
             Source.TYPE_115 -> Drive115(source)
             Source.TYPE_QUARK -> QuarkDrive(source)
             Source.TYPE_ALIYUN -> AliyunDrive(source)
+            Source.TYPE_123 -> Drive123(source)
             Source.TYPE_GDRIVE -> GoogleDrive(source)
             else -> throw IllegalArgumentException(source.type)
         }

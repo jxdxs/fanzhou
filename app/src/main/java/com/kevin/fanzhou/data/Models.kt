@@ -31,6 +31,7 @@ data class Source(
         TYPE_115 -> "115网盘"
         TYPE_QUARK -> "夸克网盘"
         TYPE_ALIYUN -> "阿里云盘"
+        TYPE_123 -> "123云盘"
         TYPE_GDRIVE -> "谷歌云盘"
         else -> type
     }
@@ -43,8 +44,9 @@ data class Source(
         const val TYPE_115 = "p115"
         const val TYPE_QUARK = "quark"
         const val TYPE_ALIYUN = "aliyun"
+        const val TYPE_123 = "p123"
         const val TYPE_GDRIVE = "gdrive"
-        val CLOUD_TYPES = setOf(TYPE_115, TYPE_QUARK, TYPE_ALIYUN, TYPE_GDRIVE)
+        val CLOUD_TYPES = setOf(TYPE_115, TYPE_QUARK, TYPE_ALIYUN, TYPE_123, TYPE_GDRIVE)
     }
 }
 

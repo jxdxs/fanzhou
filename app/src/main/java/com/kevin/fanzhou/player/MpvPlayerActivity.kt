@@ -1572,21 +1572,13 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         })
 
         touch.setOnTouchListener { _, ev ->
-            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
-                touchStartedInControls = isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt())
-                if (touchStartedInControls) {
-                    bumpControls()
-                }
-            }
-            if (touchStartedInControls) {
-                if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
-                    touchStartedInControls = false
-                }
-                return@setOnTouchListener true
-            }
             detector.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt())) {
+                        drag = Drag.NONE
+                        return@setOnTouchListener false
+                    }
                     drag = Drag.NONE
                     startX = ev.x; startY = ev.y
                     startPos = posMs
@@ -1595,6 +1587,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     startBrightness = if (b < 0) 0.5f else b
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt()) && drag == Drag.NONE) return@setOnTouchListener false
                     if (longPressActive) return@setOnTouchListener true
                     val dx = ev.x - startX
                     val dy = ev.y - startY

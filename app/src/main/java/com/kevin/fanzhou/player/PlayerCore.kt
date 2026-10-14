@@ -62,10 +62,21 @@ object PlayerCore {
         val sid = p.sourceId ?: return
         val old = Repo.store.cloudRecent(sid).firstOrNull { it.id == cf.id }
         val dirId = p.cloudFolderKey?.substringAfter(':', "")?.takeIf { it.isNotEmpty() }
+        val finalDirId = old?.dirId ?: dirId
+        val finalDirName = old?.dirName
         Repo.store.addCloudRecent(
             sid,
-            (old ?: CloudRecent(cf.id, cf.name, cf.extra, cf.size, cf.thumb, cf.duration, dirId))
-                .copy(at = System.currentTimeMillis()),
+            CloudRecent(
+                id = cf.id,
+                name = cf.name,
+                extra = cf.extra ?: old?.extra,
+                size = if (cf.size > 0) cf.size else (old?.size ?: 0),
+                thumb = cf.thumb ?: old?.thumb,
+                duration = if (cf.duration > 0) cf.duration else (old?.duration ?: 0),
+                dirId = finalDirId,
+                dirName = finalDirName,
+                at = System.currentTimeMillis(),
+            ),
         )
     }
 }

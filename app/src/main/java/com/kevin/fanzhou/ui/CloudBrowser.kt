@@ -321,7 +321,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
         android.widget.Toast.makeText(context, "已删除播放记录", android.widget.Toast.LENGTH_SHORT).show()
     }
     fun addRecent(f: CloudFile) = store.addCloudRecent(
-        sid, CloudRecent(f.id, f.name, f.extra, f.size, f.thumb, f.duration, dirId, title, System.currentTimeMillis())
+        sid, CloudRecent(f.id, f.name, f.extra, f.size, f.thumb, f.duration, dirId ?: dir, title, System.currentTimeMillis())
     )
     fun playItems(fromStart: CloudFile?) = videos.map { v ->
         drive.playItem(v, all).copy(cloudFolderKey = "$sid:$dir").let { if (v == fromStart) it.copy(startMs = 0) else it }
@@ -348,18 +348,24 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     fun playRecent(r: CloudRecent) {
         val f = CloudFile(r.id, r.name, false, r.size, r.extra, thumb = r.thumb, duration = r.duration)
         store.addCloudRecent(sid, r.copy(at = System.currentTimeMillis()))
-        val dir = r.dirId
-        if (dir == null) { PlayerCore.start(context, listOf(drive.playItem(f, emptyList())), 0); return }
-        // Rebuild the folder queue so 选集/自动连播 work from 最近播放 too,
-        // without the user having to drill back into nested folders.
+        val targetDir = r.dirId ?: dir
         opScope.launch {
-            val sibs = runCatching { drive.list(dir) }.getOrNull()
-            val vids = sibs?.filter { it.isVideo }.orEmpty()
+            val sibs = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { drive.list(targetDir) }.getOrNull()
+            }
+            val vids = sibs?.filter { it.isVideo }
+                ?.sortedWith(compareBy { WebDavClient.naturalKey(it.name) })
+                .orEmpty()
             val idx = vids.indexOfFirst { it.id == r.id }
-            if (sibs == null || idx < 0 || vids.size <= 1) {
-                PlayerCore.start(context, listOf(drive.playItem(f, emptyList()).copy(cloudFolderKey = "$sid:$dir")), 0)
+                .takeIf { it >= 0 }
+                ?: vids.indexOfFirst { it.name == r.name }.takeIf { it >= 0 }
+                ?: vids.indexOfFirst { it.name.substringBeforeLast('.') == r.name.substringBeforeLast('.') }.takeIf { it >= 0 }
+                ?: 0
+            if (vids.isNotEmpty()) {
+                val items = vids.map { drive.playItem(it, sibs ?: vids).copy(cloudFolderKey = "$sid:$targetDir") }
+                PlayerCore.start(context, items, idx)
             } else {
-                PlayerCore.start(context, vids.map { drive.playItem(it, sibs).copy(cloudFolderKey = "$sid:$dir") }, idx)
+                PlayerCore.start(context, listOf(drive.playItem(f, emptyList()).copy(cloudFolderKey = "$sid:$targetDir")), 0)
             }
         }
     }

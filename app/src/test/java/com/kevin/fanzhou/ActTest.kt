@@ -43,4 +43,54 @@ class ActTest {
     }
     @Test @Config(qualifiers = "w800dp-h360dp-land-xxhdpi") fun land() { println("=== LAND"); run() }
     @Test @Config(qualifiers = "w360dp-h800dp-port-xxhdpi") fun port() { println("=== PORT"); run() }
+
+    @Test @Config(qualifiers = "w800dp-h360dp-land-xxhdpi")
+    fun testButtonClick() {
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse("file:///sdcard/a.mp4"))
+        val ctl = Robolectric.buildActivity(PlayerActivity::class.java, i).setup()
+        val act = ctl.get()
+        val pv = find(act.window.decorView)!!
+        pv.showController()
+        val audioBtn = pv.findViewById<View>(R.id.fz_audio)!!
+        var clicked = false
+        audioBtn.setOnClickListener { clicked = true }
+        val loc = IntArray(2)
+        audioBtn.getLocationOnScreen(loc)
+        val x = loc[0] + audioBtn.width / 2f
+        val y = loc[1] + audioBtn.height / 2f
+        println("audioBtn pos: $x, $y, w=${audioBtn.width}, h=${audioBtn.height}, vis=${audioBtn.visibility}")
+        val now = android.os.SystemClock.uptimeMillis()
+        val down = android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_DOWN, x, y, 0)
+        val up = android.view.MotionEvent.obtain(now, now + 50, android.view.MotionEvent.ACTION_UP, x, y, 0)
+        pv.findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)?.setOnTouchListener { v, ev ->
+            println("exo_bottom_bar onTouch: action=${ev.actionMasked}")
+            false
+        }
+        pv.findViewById<View>(androidx.media3.ui.R.id.exo_basic_controls)?.setOnTouchListener { v, ev ->
+            println("exo_basic_controls onTouch: action=${ev.actionMasked}")
+            false
+        }
+        audioBtn.setOnTouchListener { v, ev ->
+            println("audioBtn onTouch: action=${ev.actionMasked}")
+            false
+        }
+        val downHandled = act.window.decorView.dispatchTouchEvent(down)
+        val upHandled = act.window.decorView.dispatchTouchEvent(up)
+        shadowOf(Looper.getMainLooper()).idle()
+        org.junit.Assert.assertTrue("Control button should receive click", clicked)
+
+        // Test blank area tap on bottom bar
+        pv.showController()
+        val bottomBar = pv.findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)!!
+        val bLoc = IntArray(2)
+        bottomBar.getLocationOnScreen(bLoc)
+        val blankX = pv.width / 2f
+        val blankY = bLoc[1] + bottomBar.height / 2f
+        val down2 = android.view.MotionEvent.obtain(now + 200, now + 200, android.view.MotionEvent.ACTION_DOWN, blankX, blankY, 0)
+        val up2 = android.view.MotionEvent.obtain(now + 200, now + 250, android.view.MotionEvent.ACTION_UP, blankX, blankY, 0)
+        act.window.decorView.dispatchTouchEvent(down2)
+        act.window.decorView.dispatchTouchEvent(up2)
+        shadowOf(Looper.getMainLooper()).idle()
+        org.junit.Assert.assertTrue("Controller should remain visible after blank tap", pv.isControllerFullyVisible)
+    }
 }

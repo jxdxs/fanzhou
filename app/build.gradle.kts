@@ -15,8 +15,8 @@ android {
         minSdk = 26
         targetSdk = 35
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
-        versionCode = 52
-        versionName = "2.3.34"
+        versionCode = 53
+        versionName = "2.3.35"
     }
 
     signingConfigs {

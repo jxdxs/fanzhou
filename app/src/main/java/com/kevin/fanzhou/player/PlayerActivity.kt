@@ -257,6 +257,7 @@ class PlayerActivity : ComponentActivity() {
         playerView = (layoutInflater.inflate(R.layout.fz_player_view, root, false) as PlayerView).apply {
             useController = true
             controllerShowTimeoutMs = 10000
+            setControllerHideOnTouch(false)
             setShowNextButton(true)
             setShowPreviousButton(true)
             setShowSubtitleButton(true)
@@ -337,16 +338,6 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_subtitle)?.setOnClickListener { v -> showTextTrackMenu(v) }
         updateSpeedLabel()
 
-        val bumpController = View.OnClickListener {
-            playerView.showController()
-        }
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)?.setOnClickListener(bumpController)
-        playerView.findViewById<View>(R.id.fz_time)?.setOnClickListener(bumpController)
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_basic_controls)?.setOnClickListener(bumpController)
-        playerView.findViewById<View>(R.id.fz_progress_row)?.setOnClickListener(bumpController)
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_position)?.setOnClickListener(bumpController)
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_duration)?.setOnClickListener(bumpController)
-        topBar.setOnClickListener(bumpController)
 
 
         hintView = TextView(this).apply {
@@ -522,21 +513,13 @@ class PlayerActivity : ComponentActivity() {
         })
 
         playerView.setOnTouchListener { _, ev ->
-            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
-                touchStartedInControls = isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt())
-                if (touchStartedInControls) {
-                    playerView.showController()
-                }
-            }
-            if (touchStartedInControls) {
-                if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
-                    touchStartedInControls = false
-                }
-                return@setOnTouchListener true
-            }
             detector.onTouchEvent(ev)
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt())) {
+                        drag = Drag.NONE
+                        return@setOnTouchListener false
+                    }
                     drag = Drag.NONE
                     startX = ev.x; startY = ev.y
                     startPos = player.currentPosition
@@ -545,6 +528,7 @@ class PlayerActivity : ComponentActivity() {
                     startBrightness = if (b < 0) 0.5f else b
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (isTouchInControlArea(ev.rawX.toInt(), ev.rawY.toInt()) && drag == Drag.NONE) return@setOnTouchListener false
                     if (longPressSpeedActive) return@setOnTouchListener true
                     val dx = ev.x - startX
                     val dy = ev.y - startY

@@ -133,6 +133,7 @@ fun SourceBadge(type: String, size: Int = 40) {
         com.kevin.fanzhou.data.Source.TYPE_115 -> "115" to Color(0xFF2777F8)
         com.kevin.fanzhou.data.Source.TYPE_QUARK -> "夸克" to Color(0xFF5B5FEF)
         com.kevin.fanzhou.data.Source.TYPE_ALIYUN -> "阿里" to Color(0xFFFF6A00)
+        com.kevin.fanzhou.data.Source.TYPE_123 -> "123" to Color(0xFF007AFF)
         com.kevin.fanzhou.data.Source.TYPE_GDRIVE -> "G" to Color(0xFF1FA463)
         else -> "?" to Color.Gray
     }

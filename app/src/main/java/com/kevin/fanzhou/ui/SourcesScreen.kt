@@ -91,7 +91,7 @@ fun SourcesScreen(nav: NavHostController) {
                     Spacer(Modifier.height(8.dp))
                     AddRow(listOf(Source.TYPE_115, Source.TYPE_QUARK, Source.TYPE_ALIYUN)) { nav.navigate(Routes.cloudLogin(it)) }
                     Spacer(Modifier.height(10.dp))
-                    AddRow(listOf(Source.TYPE_GDRIVE)) { nav.navigate(Routes.cloudLogin(it)) }
+                    AddRow(listOf(Source.TYPE_123, Source.TYPE_GDRIVE)) { nav.navigate(Routes.cloudLogin(it)) }
                 }
             }
         }
