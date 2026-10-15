@@ -159,10 +159,29 @@ class ActTest {
         val stopBtn = findText(dialog2!!, "停止循环")
         org.junit.Assert.assertNotNull("停止循环 should exist when looping", stopBtn)
 
-        // Test 4: Delete segment with confirmation
+        // Test 4: Delete button on segment row should be removed
         val delBtn = findText(dialog2, "🗑")
-        org.junit.Assert.assertNotNull("Delete button should exist", delBtn)
-        delBtn!!.performClick()
+        org.junit.Assert.assertNull("Delete button on segment row should be removed", delBtn)
+
+        // Test 5: Long press segment row to open actions popup
+        val segItem2 = findText(dialog2, "片段 1")
+        org.junit.Assert.assertNotNull("Saved segment should appear in list", segItem2)
+        var longTarget: View? = segItem2
+        while (longTarget != null && !longTarget.isLongClickable) {
+            longTarget = longTarget.parent as? View
+        }
+        val longClicked = (longTarget ?: segItem2!!).performLongClick()
+        org.junit.Assert.assertTrue("Long click should be handled", longClicked)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // Verify popup has "编辑" and "删除"
+        val editOption = findText(dialog2, "编辑")
+        val delOption = findText(dialog2, "删除")
+        org.junit.Assert.assertNotNull("Edit option should exist in popup", editOption)
+        org.junit.Assert.assertNotNull("Delete option should exist in popup", delOption)
+
+        // Click "删除" -> confirmation dialog appears
+        delOption!!.performClick()
         shadowOf(Looper.getMainLooper()).idle()
 
         val confirmDelBtn = findText(dialog2, "确认删除")

@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.text.TextUtils
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -102,8 +103,10 @@ object AbLoopDialog {
             layoutParams = FrameLayout.LayoutParams(cardWidth, -2, Gravity.CENTER)
         }
 
-        lateinit var renderAddImpl: () -> Unit
+        lateinit var renderListImpl: () -> Unit
+        lateinit var renderEditImpl: (AbSegment?) -> Unit
         lateinit var renderConfirmDeleteImpl: (AbSegment) -> Unit
+        lateinit var showSegmentActionsImpl: (AbSegment) -> Unit
 
         fun renderList() {
             card.removeAllViews()
@@ -153,7 +156,7 @@ object AbLoopDialog {
                     setColor(0xFF1976D2.toInt())
                 }
                 setPadding(dp(10), dp(4), dp(10), dp(4))
-                setOnClickListener { renderAddImpl() }
+                setOnClickListener { renderEditImpl(null) }
             }
             header.addView(addBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
 
@@ -206,20 +209,30 @@ object AbLoopDialog {
                             setColor(if (isCur) 0x331976D2.toInt() else 0x1AFFFFFF.toInt())
                             if (isCur) setStroke(dp(1), 0xFF2196F3.toInt())
                         }
-                        setPadding(dp(10), dp(8), dp(8), dp(8))
+                        setPadding(dp(10), dp(8), dp(10), dp(8))
                         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
                         isClickable = true
+                        isLongClickable = true
                         setOnClickListener {
                             onStartLoop(seg)
                             Toast.makeText(activity, "已开始循环「${seg.name}」", Toast.LENGTH_SHORT).show()
                             dismiss()
+                        }
+                        setOnLongClickListener {
+                            showSegmentActionsImpl(seg)
+                            true
                         }
                     }
 
                     val infoCol = LinearLayout(activity).apply {
                         orientation = LinearLayout.VERTICAL
                         isClickable = true
+                        isLongClickable = true
                         setOnClickListener { item.performClick() }
+                        setOnLongClickListener {
+                            showSegmentActionsImpl(seg)
+                            true
+                        }
                     }
 
                     val nameRow = LinearLayout(activity).apply {
@@ -253,25 +266,129 @@ object AbLoopDialog {
                     }
                     infoCol.addView(timeTv)
 
-                    item.addView(infoCol, LinearLayout.LayoutParams(0, -2, 1f))
-
-                    val delBtn = TextView(activity).apply {
-                        text = "🗑"
-                        setTextColor(0xCCFF5252.toInt())
-                        textSize = 15f
-                        gravity = Gravity.CENTER
-                        setPadding(dp(8), dp(4), dp(8), dp(4))
-                        setOnClickListener {
-                            renderConfirmDeleteImpl(seg)
-                        }
-                    }
-                    item.addView(delBtn, LinearLayout.LayoutParams(-2, -2))
+                    item.addView(infoCol, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
                     listLayout.addView(item)
                 }
                 scroll.addView(listLayout)
                 card.addView(scroll)
+
+                val hintTv = TextView(activity).apply {
+                    text = "💡 长按片段可编辑或删除"
+                    setTextColor(0x77FFFFFF.toInt())
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(4), 0, 0)
+                }
+                card.addView(hintTv)
             }
+        }
+
+        fun showSegmentActions(seg: AbSegment) {
+            val modal = FrameLayout(activity).apply {
+                layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                setBackgroundColor(0x66000000)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { overlay.removeView(this) }
+            }
+
+            val modalWidth = (260 * dm.density).toInt().coerceAtMost(dm.widthPixels - dp(32))
+            val modalCard = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(0xF5262626.toInt())
+                    cornerRadius = dp(12).toFloat()
+                    setStroke(dp(1), 0x55FFFFFF.toInt())
+                }
+                setPadding(dp(16), dp(14), dp(16), dp(12))
+                layoutParams = FrameLayout.LayoutParams(modalWidth, -2, Gravity.CENTER)
+                isClickable = true
+            }
+
+            val titleTv = TextView(activity).apply {
+                text = seg.name
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }
+            modalCard.addView(titleTv)
+
+            val timeTv = TextView(activity).apply {
+                val durText = fmt((seg.endMs - seg.startMs).coerceAtLeast(0))
+                text = "${fmt(seg.startMs)} ~ ${fmt(seg.endMs)} (时长 $durText)"
+                setTextColor(0xAAFFFFFF.toInt())
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(2), 0, dp(10))
+            }
+            modalCard.addView(timeTv)
+
+            val div = View(activity).apply {
+                setBackgroundColor(0x22FFFFFF)
+                layoutParams = LinearLayout.LayoutParams(-1, dp(1)).apply { bottomMargin = dp(8) }
+            }
+            modalCard.addView(div)
+
+            val editBtn = TextView(activity).apply {
+                text = "编辑"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(6).toFloat()
+                    setColor(0x331976D2.toInt())
+                    setStroke(dp(1), 0xFF1976D2.toInt())
+                }
+                setPadding(0, dp(8), 0, dp(8))
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) }
+                isClickable = true
+                setOnClickListener {
+                    overlay.removeView(modal)
+                    renderEditImpl(seg)
+                }
+            }
+            modalCard.addView(editBtn)
+
+            val delBtn = TextView(activity).apply {
+                text = "删除"
+                setTextColor(0xFFFF5252.toInt())
+                textSize = 14f
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(6).toFloat()
+                    setColor(0x22F44336.toInt())
+                    setStroke(dp(1), 0x66F44336.toInt())
+                }
+                setPadding(0, dp(8), 0, dp(8))
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
+                isClickable = true
+                setOnClickListener {
+                    overlay.removeView(modal)
+                    renderConfirmDeleteImpl(seg)
+                }
+            }
+            modalCard.addView(delBtn)
+
+            val cancelBtn = TextView(activity).apply {
+                text = "取消"
+                setTextColor(0xAAFFFFFF.toInt())
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(6), 0, dp(4))
+                layoutParams = LinearLayout.LayoutParams(-1, -2)
+                isClickable = true
+                setOnClickListener {
+                    overlay.removeView(modal)
+                }
+            }
+            modalCard.addView(cancelBtn)
+
+            modal.addView(modalCard)
+            overlay.addView(modal)
         }
 
         fun renderConfirmDelete(seg: AbSegment) {
@@ -314,13 +431,13 @@ object AbLoopDialog {
                 setOnClickListener { onClick() }
             }
 
-            val cancelBtn = actionBtn("取消", false) { renderList() }
+            val cancelBtn = actionBtn("取消", false) { renderListImpl() }
             val confirmBtn = actionBtn("确认删除", true) {
                 segments.removeAll { it.id == seg.id }
                 AbSegmentStore.save(activity, videoKey, segments)
                 if (seg.id == activeSegmentId) onStopLoop()
                 Toast.makeText(activity, "已删除片段「${seg.name}」", Toast.LENGTH_SHORT).show()
-                renderList()
+                renderListImpl()
             }
 
             btnRow.addView(cancelBtn)
@@ -329,11 +446,11 @@ object AbLoopDialog {
             card.addView(btnRow)
         }
 
-        fun renderAdd() {
+        fun renderEdit(targetSeg: AbSegment? = null) {
             card.removeAllViews()
 
-            var curA = currentPosMs.coerceAtLeast(0L)
-            var curB = (currentPosMs + 10_000L).coerceAtMost(if (durationMs > 0) durationMs else currentPosMs + 60_000L).coerceAtLeast(curA + 1000L)
+            var curA = targetSeg?.startMs ?: currentPosMs.coerceAtLeast(0L)
+            var curB = targetSeg?.endMs ?: (currentPosMs + 10_000L).coerceAtMost(if (durationMs > 0) durationMs else currentPosMs + 60_000L).coerceAtLeast(curA + 1000L)
 
             // Header
             val header = LinearLayout(activity).apply {
@@ -342,7 +459,7 @@ object AbLoopDialog {
                 layoutParams = LinearLayout.LayoutParams(-1, -2)
             }
             val title = TextView(activity).apply {
-                text = "新增 AB 循环片段"
+                text = if (targetSeg == null) "新增 AB 循环片段" else "编辑 AB 循环片段"
                 setTextColor(Color.WHITE)
                 textSize = 14f
                 typeface = Typeface.DEFAULT_BOLD
@@ -354,7 +471,7 @@ object AbLoopDialog {
                 textSize = 14f
                 typeface = Typeface.DEFAULT_BOLD
                 setPadding(dp(4), dp(4), dp(4), dp(4))
-                setOnClickListener { renderList() }
+                setOnClickListener { renderListImpl() }
             }
             header.addView(backBtn)
             card.addView(header)
@@ -374,7 +491,7 @@ object AbLoopDialog {
             card.addView(nameLabel)
 
             val nameInput = EditText(activity).apply {
-                setText("片段 ${segments.size + 1}")
+                setText(targetSeg?.name ?: "片段 ${segments.size + 1}")
                 setTextColor(Color.WHITE)
                 textSize = 13f
                 setSingleLine(true)
@@ -537,7 +654,7 @@ object AbLoopDialog {
                     cornerRadius = dp(6).toFloat()
                     setColor(0x33FFFFFF.toInt())
                 }
-                setOnClickListener { renderList() }
+                setOnClickListener { renderListImpl() }
             }
             val saveBtn = TextView(activity).apply {
                 text = "保存"
@@ -554,12 +671,29 @@ object AbLoopDialog {
                         Toast.makeText(activity, "B 点时间必须大于 A 点时间", Toast.LENGTH_SHORT).show()
                         return@setOnClickListener
                     }
-                    val name = nameInput.text.toString().trim().ifEmpty { "片段 ${segments.size + 1}" }
-                    val newSeg = AbSegment(name = name, startMs = curA, endMs = curB)
-                    segments.add(newSeg)
-                    AbSegmentStore.save(activity, videoKey, segments)
-                    Toast.makeText(activity, "已保存「${newSeg.name}」", Toast.LENGTH_SHORT).show()
-                    renderList()
+                    val name = nameInput.text.toString().trim().ifEmpty {
+                        targetSeg?.name ?: "片段 ${segments.size + 1}"
+                    }
+                    if (targetSeg == null) {
+                        val newSeg = AbSegment(name = name, startMs = curA, endMs = curB)
+                        segments.add(newSeg)
+                        AbSegmentStore.save(activity, videoKey, segments)
+                        Toast.makeText(activity, "已保存「${newSeg.name}」", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val idx = segments.indexOfFirst { it.id == targetSeg.id }
+                        val updatedSeg = targetSeg.copy(name = name, startMs = curA, endMs = curB)
+                        if (idx >= 0) {
+                            segments[idx] = updatedSeg
+                        } else {
+                            segments.add(updatedSeg)
+                        }
+                        AbSegmentStore.save(activity, videoKey, segments)
+                        if (targetSeg.id == activeSegmentId) {
+                            onStartLoop(updatedSeg)
+                        }
+                        Toast.makeText(activity, "已更新「${updatedSeg.name}」", Toast.LENGTH_SHORT).show()
+                    }
+                    renderListImpl()
                 }
             }
 
@@ -569,8 +703,10 @@ object AbLoopDialog {
             card.addView(actRow)
         }
 
-        renderAddImpl = { renderAdd() }
+        renderListImpl = { renderList() }
+        renderEditImpl = { renderEdit(it) }
         renderConfirmDeleteImpl = { renderConfirmDelete(it) }
+        showSegmentActionsImpl = { showSegmentActions(it) }
         renderList()
         overlay.addView(card)
         root.addView(overlay)
