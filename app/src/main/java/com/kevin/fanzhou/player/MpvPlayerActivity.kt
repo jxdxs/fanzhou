@@ -249,12 +249,18 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         m.setOptionString("ao", "audiotrack,opensles")
         m.setOptionString("tls-verify", "no")
         val bufMb = Repo.store.bufferSizeMb
-        val safeMpvMb = bufMb.coerceIn(32, 256)
+        val preloadMinutes = Repo.store.preloadMinutes
+        val preloadSec = (preloadMinutes * 60).coerceIn(60, 300)
+        val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
+        val safeMpvMb = minOf(bufMb, maxOf(64, (maxHeapMb * 0.45).toInt()))
         val maxBytes = safeMpvMb * 1024L * 1024L
-        val backBytes = (maxBytes / 4).coerceIn(16L * 1024 * 1024, 48L * 1024 * 1024)
+        val backBytes = (maxBytes / 3).coerceIn(32L * 1024 * 1024, 128L * 1024 * 1024)
         m.setOptionString("cache", "yes")
         m.setOptionString("demuxer-max-bytes", "$maxBytes")
         m.setOptionString("demuxer-max-back-bytes", "$backBytes")
+        m.setOptionString("demuxer-readahead-secs", "$preloadSec")
+        m.setOptionString("cache-secs", "$preloadSec")
+        m.setOptionString("demuxer-seekable-cache", "yes")
         m.setOptionString("network-timeout", "30")
         m.setOptionString("keep-open", "yes")
         m.setOptionString("input-default-bindings", "no")
@@ -2116,6 +2122,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         updatePipParams()
     }
 
+    private var isPipActive = false
+
     private fun stopPlaybackAndCleanUp() {
         if (mpv != null && !switching) {
             saveCurrent(stopped = true)
@@ -2129,6 +2137,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isEnteringPip = false
+        isPipActive = isInPictureInPictureMode
         if (isInPictureInPictureMode) {
             handler.removeCallbacks(hideControlsRunnable)
             controls.visibility = View.GONE
@@ -2136,8 +2145,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             hintView.visibility = View.GONE
             dismissResumePrompt()
         } else {
-            if (isFinishing || isDestroyed) {
+            if (isFinishing || isDestroyed || lifecycle.currentState <= androidx.lifecycle.Lifecycle.State.CREATED) {
                 stopPlaybackAndCleanUp()
+                finish()
                 return
             }
             PlayerOrientation.apply(this)
@@ -2163,15 +2173,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     override fun onStop() {
         super.onStop()
         try { unregisterReceiver(noisyReceiver) } catch (_: Throwable) {}
-        if (isFinishing || isDestroyed) {
-            stopPlaybackAndCleanUp()
-            return
+        stopPlaybackAndCleanUp()
+        if (isPipActive || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
+            finish()
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) return
-        if (mpv != null && !switching) {
-            saveCurrent(stopped = true)
-            mpv?.setPropertyBoolean("pause", true)
-        }
+        isPipActive = false
     }
 
     override fun onDestroy() {

@@ -611,21 +611,22 @@ class PlayerActivity : ComponentActivity() {
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
         val bufMb = Repo.store.bufferSizeMb
+        val preloadMinutes = Repo.store.preloadMinutes
         val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-        val safeBufMb = minOf(bufMb, maxOf(32, (maxHeapMb * 0.40).toInt()))
+        val safeBufMb = minOf(bufMb, maxOf(64, (maxHeapMb * 0.45).toInt()))
         val targetBytes = safeBufMb * 1024 * 1024
-        val minBufferMs = (safeBufMb * 200).coerceIn(15_000, 45_000)
-        val maxBufferMs = (safeBufMb * 500).coerceIn(30_000, 120_000)
+        val maxBufferMs = (preloadMinutes * 60 * 1000).coerceIn(60_000, 300_000)
+        val minBufferMs = (maxBufferMs * 0.75).toInt().coerceIn(30_000, 240_000)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 minBufferMs,
                 maxBufferMs,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+                1500,
+                2500
             )
             .setTargetBufferBytes(targetBytes)
             .setPrioritizeTimeOverSizeThresholds(false)
-            .setBackBuffer(20_000, true)
+            .setBackBuffer(60_000, true)
             .build()
         player = ExoPlayer.Builder(this, renderers)
             .setLoadControl(loadControl)
@@ -2303,6 +2304,8 @@ class PlayerActivity : ComponentActivity() {
         updatePipParams()
     }
 
+    private var isPipActive = false
+
     private fun stopPlaybackAndCleanUp() {
         if (::player.isInitialized) {
             reportStopCurrent()
@@ -2315,6 +2318,7 @@ class PlayerActivity : ComponentActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isEnteringPip = false
+        isPipActive = isInPictureInPictureMode
         if (isInPictureInPictureMode) {
             playerView.hideController()
             playerView.useController = false
@@ -2324,8 +2328,9 @@ class PlayerActivity : ComponentActivity() {
             hintView.visibility = View.GONE
             dismissResumePrompt()
         } else {
-            if (isFinishing || isDestroyed) {
+            if (isFinishing || isDestroyed || lifecycle.currentState <= androidx.lifecycle.Lifecycle.State.CREATED) {
                 stopPlaybackAndCleanUp()
+                finish()
                 return
             }
             PlayerOrientation.apply(this)
@@ -2346,15 +2351,11 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (isFinishing || isDestroyed) {
-            stopPlaybackAndCleanUp()
-            return
+        stopPlaybackAndCleanUp()
+        if (isPipActive || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode)) {
+            finish()
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) return
-        if (::player.isInitialized) {
-            reportStopCurrent()
-            player.pause()
-        }
+        isPipActive = false
     }
 
     override fun onDestroy() {

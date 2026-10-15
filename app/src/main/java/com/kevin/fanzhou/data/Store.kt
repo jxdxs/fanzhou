@@ -67,10 +67,15 @@ class Store(context: Context) {
         get() = prefs.getBoolean("auto_next", true)
         set(v) { prefs.edit().putBoolean("auto_next", v).apply() }
 
-    /** 播放缓存加载大小 (MB): 32 ~ 512，默认 64 */
+    /** 播放缓存加载大小 (MB): 32 ~ 1024，默认 256 */
     var bufferSizeMb: Int
-        get() = prefs.getInt("buffer_size_mb", 64).coerceIn(32, 512)
-        set(v) { prefs.edit().putInt("buffer_size_mb", v.coerceIn(32, 512)).apply() }
+        get() = prefs.getInt("buffer_size_mb", 256).coerceIn(32, 1024)
+        set(v) { prefs.edit().putInt("buffer_size_mb", v.coerceIn(32, 1024)).apply() }
+
+    /** 预加载缓冲时长 (分钟): 1, 2, 3, 5，默认 2 */
+    var preloadMinutes: Int
+        get() = prefs.getInt("preload_minutes", 2).coerceIn(1, 10)
+        set(v) { prefs.edit().putInt("preload_minutes", v.coerceIn(1, 10)).apply() }
 
     /** Manually picked quality label remembered per series/folder ("source:folder" or "jf:source:title" key). */
     fun qualityForSeries(seriesKey: String): String? {
