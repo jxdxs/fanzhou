@@ -90,7 +90,7 @@ fun SettingsScreen() {
                 Slider(outroSkip.toFloat(), { outroSkip = (Math.round(it / 5) * 5).toInt(); store.outroSkipSec = outroSkip }, valueRange = 0f..300f, steps = 59)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("播放缓存加载大小：${bufferMb} MB", fontSize = 14.sp)
-                Text("增大缓存可抵抗网络抖动与云盘限速波动，实现平稳流畅播放；设备内存紧张时建议 64MB ~ 128MB", fontSize = 12.sp, color = TextDim)
+                Text("增大缓存可抵抗弱网抖动与云盘限速波动；推荐 64MB ~ 128MB。若设备内存紧张，系统将自适应限制安全缓冲，防止内存溢出退出", fontSize = 12.sp, color = TextDim)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(32 to "32M", 64 to "64M", 128 to "128M", 256 to "256M", 512 to "512M").forEach { (mb, name) ->
                         FilterChip(selected = bufferMb == mb, onClick = { bufferMb = mb; store.bufferSizeMb = mb }, label = { Text(name) })

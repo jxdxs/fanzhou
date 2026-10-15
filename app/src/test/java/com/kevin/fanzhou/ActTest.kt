@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
+import android.widget.TextView
 import androidx.media3.ui.PlayerView
 import com.kevin.fanzhou.player.PlayerActivity
 import org.junit.Test
@@ -92,5 +93,111 @@ class ActTest {
         act.window.decorView.dispatchTouchEvent(up2)
         shadowOf(Looper.getMainLooper()).idle()
         org.junit.Assert.assertTrue("Controller should remain visible after blank tap", pv.isControllerFullyVisible)
+    }
+
+    @Test
+    fun testAbLoopCrash() {
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse("file:///sdcard/a.mp4"))
+        val ctl = Robolectric.buildActivity(PlayerActivity::class.java, i).setup()
+        val act = ctl.get()
+        val pv = find(act.window.decorView)!!
+        pv.showController()
+        val abBtn = pv.findViewById<View>(R.id.fz_ab)!!
+        abBtn.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // Find "+ 新增" button
+        val dialog = act.findViewById<View>(R.id.fz_ab_dialog_tag) as? ViewGroup
+        org.junit.Assert.assertNotNull("Dialog should be shown", dialog)
+
+        // Find "+ 新增"
+        fun findText(v: View, txt: String): TextView? {
+            if (v is TextView && v.text == txt) return v
+            if (v is ViewGroup) {
+                for (j in 0 until v.childCount) {
+                    val res = findText(v.getChildAt(j), txt)
+                    if (res != null) return res
+                }
+            }
+            return null
+        }
+
+        val addBtn = findText(dialog!!, "+ 新增")
+        org.junit.Assert.assertNotNull("+ 新增 button should exist", addBtn)
+        addBtn!!.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // Test 1: Click "保存"
+        val saveBtn = findText(dialog, "保存")
+        org.junit.Assert.assertNotNull("保存 button should exist", saveBtn)
+        saveBtn!!.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // Dialog should still be open with the saved segment
+        val segItem = findText(dialog, "片段 1")
+        org.junit.Assert.assertNotNull("Saved segment should appear in list", segItem)
+
+        // Test 2: Click the segment row to start loop
+        var clickTarget: View? = segItem
+        while (clickTarget != null && !clickTarget.hasOnClickListeners()) {
+            clickTarget = clickTarget.parent as? View
+        }
+        clickTarget?.performClick() ?: segItem!!.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // Dialog should be dismissed and loop active
+        val dialogDismissed = act.findViewById<View>(R.id.fz_ab_dialog_tag)
+        org.junit.Assert.assertNull("Dialog should be dismissed after starting loop", dialogDismissed)
+
+        // Test 3: Re-open dialog while looping
+        pv.showController()
+        abBtn.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        val dialog2 = act.findViewById<View>(R.id.fz_ab_dialog_tag) as? ViewGroup
+        org.junit.Assert.assertNotNull("Dialog should be shown again with saved segments", dialog2)
+
+        val stopBtn = findText(dialog2!!, "停止循环")
+        org.junit.Assert.assertNotNull("停止循环 should exist when looping", stopBtn)
+
+        // Test 4: Delete segment with confirmation
+        val delBtn = findText(dialog2, "🗑")
+        org.junit.Assert.assertNotNull("Delete button should exist", delBtn)
+        delBtn!!.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val confirmDelBtn = findText(dialog2, "确认删除")
+        org.junit.Assert.assertNotNull("确认删除 button should exist", confirmDelBtn)
+        confirmDelBtn!!.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // Check empty text appears
+        val emptyTv = findText(dialog2, "暂无保存的 AB 片段\n点击右上角「+ 新增」设置循环区间")
+        org.junit.Assert.assertNotNull("Empty hint should appear after deleting segment", emptyTv)
+    }
+
+    @Test
+    fun testRecentPlayShortExitNoReset() {
+        val key = "url:file:///sdcard/b.mp4"
+        val dur = 600_000L // 10 min
+        val saved = 300_000L // 5 min
+        com.kevin.fanzhou.data.Repo.store.saveProgress(key, saved, dur, false)
+        org.junit.Assert.assertEquals(saved, com.kevin.fanzhou.data.Repo.store.position(key))
+
+        // Open video with resumeKey set
+        val item = com.kevin.fanzhou.data.PlayItem(url = "file:///sdcard/b.mp4", title = "Video B", startMs = saved, resumeKey = key)
+        com.kevin.fanzhou.data.PlayQueue.set(listOf(item), 0)
+
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse("file:///sdcard/b.mp4"))
+        val ctl = Robolectric.buildActivity(PlayerActivity::class.java, i).setup()
+        val act = ctl.get()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // User does NOT click "继续", and exits after 3 seconds (destroy activity)
+        ctl.pause().stop().destroy()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // Progress should STILL be 5 minutes (300_000L), NOT reset to 0!
+        val preserved = com.kevin.fanzhou.data.Repo.store.position(item.effectiveResumeKey)
+        org.junit.Assert.assertEquals("5-minute progress should be preserved after short exit without resume", saved, preserved)
     }
 }

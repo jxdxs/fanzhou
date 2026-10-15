@@ -193,7 +193,20 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         bindViews()
         PlayerOrientation.compactButtons(this, window.decorView, mpvTransportIds); stretchMpvRow()
         queue = PlayQueue.items.toMutableList()
-        intent?.data?.let { d -> queue = mutableListOf(PlayItem(url = d.toString(), title = d.lastPathSegment ?: "视频")); PlayQueue.set(queue, 0) }
+        intent?.data?.let { d ->
+            val url = d.toString()
+            val resumeKey = "url:${url.substringBefore('?')}"
+            val savedPos = Repo.store.position(resumeKey)
+            queue = mutableListOf(
+                PlayItem(
+                    url = url,
+                    title = d.lastPathSegment ?: "视频",
+                    startMs = savedPos,
+                    resumeKey = resumeKey
+                )
+            )
+            PlayQueue.set(queue, 0)
+        }
         if (queue.isEmpty()) { finish(); return }
         if (!initMpv()) {
             toast("MPV 内核加载失败，已改用 ExoPlayer")
@@ -234,8 +247,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         m.setOptionString("ao", "audiotrack,opensles")
         m.setOptionString("tls-verify", "no")
         val bufMb = Repo.store.bufferSizeMb
-        val maxBytes = bufMb * 1024L * 1024L
-        val backBytes = (maxBytes / 4).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)
+        val safeMpvMb = bufMb.coerceIn(32, 256)
+        val maxBytes = safeMpvMb * 1024L * 1024L
+        val backBytes = (maxBytes / 4).coerceIn(16L * 1024 * 1024, 48L * 1024 * 1024)
         m.setOptionString("cache", "yes")
         m.setOptionString("demuxer-max-bytes", "$maxBytes")
         m.setOptionString("demuxer-max-back-bytes", "$backBytes")
@@ -736,15 +750,23 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         lifecycleScope.launch { Repo.jellyfin(sid)?.reportStart(id, p.jfMediaSourceId, p.startMs) }
     }
 
+    private var hasResumedFromSaved = false
+
     @kotlin.OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
     private fun saveCurrent(stopped: Boolean, finished: Boolean = false) {
         val idx = currentIndex
         val p = (originals[idx] ?: queue.getOrNull(idx)) ?: return
-        val pos = if (finished) durMs else posMs
+        val rawPos = if (finished) durMs else posMs
         val dur = durMs
+        val pos = if (!hasResumedFromSaved && resumeTargetPos > 3000L && rawPos < resumeTargetPos && rawPos < 60_000L && !finished) {
+            resumeTargetPos
+        } else {
+            rawPos
+        }
         val done = finished || (dur > 0 && pos > dur * 0.95)
         if (pos <= 0 && !done) return
-        p.resumeKey?.let { Repo.store.saveProgress(it, pos, dur, done) }
+        val key = p.resumeKey ?: p.effectiveResumeKey
+        Repo.store.saveProgress(key, pos, dur, done)
         val id = p.jfItemId ?: return
         val client = Repo.jellyfin(p.sourceId ?: return) ?: return
         val isPaused = paused
@@ -882,6 +904,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (savedPos <= 3000L) return
         val prompt = resumePromptView ?: return
         handler.removeCallbacks(resumeCountdownRunnable)
+        hasResumedFromSaved = false
         resumeTargetPos = savedPos
         resumeCountdown = 10
         resumePromptText?.text = "上次播放至 ${fmt(savedPos)} (10s)"
@@ -929,6 +952,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             }
             layoutParams = lp
             setOnClickListener {
+                hasResumedFromSaved = true
                 seekTo(resumeTargetPos)
                 showHint("已跳转至上次播放位置")
                 dismissResumePrompt()
@@ -1023,9 +1047,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private fun checkAbLoop() {
         val seg = activeAbSegment ?: return
-        if (!fileLoaded) return
+        if (!fileLoaded || paused) return
         val pos = posMs
-        if (pos >= seg.endMs || pos < seg.startMs - 2000L) {
+        if (pos >= seg.endMs) {
             seekTo(seg.startMs)
         }
     }
@@ -1255,6 +1279,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     }
 
     private fun seekTo(ms: Long) {
+        if (resumeTargetPos > 3000L && ms >= resumeTargetPos - 5000L) {
+            hasResumedFromSaved = true
+        }
         mpv?.command(arrayOf("seek", "%.3f".format(java.util.Locale.US, ms / 1000.0), "absolute"))
         posSec = ms / 1000.0
     }
@@ -1701,7 +1728,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
             items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
             items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog(anchor) }
-            items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
             IconMenu.show(anchor, items)
             return
         }
@@ -1718,7 +1744,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         items += IconMenu.Item(R.drawable.ic_skip_intro, "跳过片头") { showSkipIntroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_skip_outro, "跳过片尾") { showSkipOutroPopup(anchor) }
         items += IconMenu.Item(R.drawable.ic_audio, "音频增强") { showAudioEnhanceDialog(anchor) }
-        items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
         IconMenu.show(anchor, items)
     }
 

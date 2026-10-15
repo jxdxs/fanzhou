@@ -5,7 +5,10 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
@@ -49,10 +52,12 @@ object AbSegmentStore {
 
 object AbLoopDialog {
     private var activeOverlay: View? = null
+    private val handler = Handler(Looper.getMainLooper())
 
     fun isShowing(): Boolean = activeOverlay != null
 
     fun dismiss() {
+        handler.removeCallbacksAndMessages(null)
         activeOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         activeOverlay = null
     }
@@ -181,11 +186,10 @@ object AbLoopDialog {
                 card.addView(empty)
             } else {
                 val scroll = ScrollView(activity).apply {
-                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
-                        // Max height limit
-                        val maxH = dp(220)
-                        if (layoutParams.height > maxH) layoutParams.height = maxH
-                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        if (segments.size > 3) dp(220) else LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
                 }
                 val listLayout = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
@@ -204,16 +208,18 @@ object AbLoopDialog {
                         }
                         setPadding(dp(10), dp(8), dp(8), dp(8))
                         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
-                    }
-
-                    val infoCol = LinearLayout(activity).apply {
-                        orientation = LinearLayout.VERTICAL
                         isClickable = true
                         setOnClickListener {
                             onStartLoop(seg)
                             Toast.makeText(activity, "已开始循环「${seg.name}」", Toast.LENGTH_SHORT).show()
                             dismiss()
                         }
+                    }
+
+                    val infoCol = LinearLayout(activity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        isClickable = true
+                        setOnClickListener { item.performClick() }
                     }
 
                     val nameRow = LinearLayout(activity).apply {
@@ -422,6 +428,16 @@ object AbLoopDialog {
                 gravity = Gravity.CENTER_VERTICAL
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) }
             }
+            fun applyStep(deltaMs: Long, isA: Boolean) {
+                if (isA) {
+                    curA = (curA + deltaMs).coerceIn(0L, if (durationMs > 0) durationMs else Long.MAX_VALUE)
+                    aValTv.text = fmt(curA)
+                } else {
+                    curB = (curB + deltaMs).coerceIn(0L, if (durationMs > 0) durationMs else Long.MAX_VALUE)
+                    bValTv.text = fmt(curB)
+                }
+            }
+
             fun stepBtn(label: String, deltaMs: Long, isA: Boolean) = TextView(activity).apply {
                 text = label
                 setTextColor(0xDDFFFFFF.toInt())
@@ -432,13 +448,27 @@ object AbLoopDialog {
                     setColor(0x22FFFFFF.toInt())
                 }
                 setPadding(dp(8), dp(3), dp(8), dp(3))
-                setOnClickListener {
-                    if (isA) {
-                        curA = (curA + deltaMs).coerceIn(0L, if (durationMs > 0) durationMs else Long.MAX_VALUE)
-                        aValTv.text = fmt(curA)
-                    } else {
-                        curB = (curB + deltaMs).coerceIn(0L, if (durationMs > 0) durationMs else Long.MAX_VALUE)
-                        bValTv.text = fmt(curB)
+                isClickable = true
+                val repeatRunnable = object : Runnable {
+                    override fun run() {
+                        applyStep(deltaMs, isA)
+                        handler.postDelayed(this, 90)
+                    }
+                }
+                setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            v.isPressed = true
+                            applyStep(deltaMs, isA)
+                            handler.postDelayed(repeatRunnable, 350)
+                            true
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            v.isPressed = false
+                            handler.removeCallbacks(repeatRunnable)
+                            true
+                        }
+                        else -> false
                     }
                 }
             }
@@ -502,7 +532,7 @@ object AbLoopDialog {
                 setTextColor(Color.WHITE)
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(14), dp(7), dp(14), dp(7))
+                setPadding(dp(16), dp(7), dp(16), dp(7))
                 background = GradientDrawable().apply {
                     cornerRadius = dp(6).toFloat()
                     setColor(0x33FFFFFF.toInt())
@@ -510,11 +540,11 @@ object AbLoopDialog {
                 setOnClickListener { renderList() }
             }
             val saveBtn = TextView(activity).apply {
-                text = "保存并循环"
+                text = "保存"
                 setTextColor(Color.WHITE)
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(16), dp(7), dp(16), dp(7))
+                setPadding(dp(22), dp(7), dp(22), dp(7))
                 background = GradientDrawable().apply {
                     cornerRadius = dp(6).toFloat()
                     setColor(0xFF1976D2.toInt())
@@ -528,14 +558,13 @@ object AbLoopDialog {
                     val newSeg = AbSegment(name = name, startMs = curA, endMs = curB)
                     segments.add(newSeg)
                     AbSegmentStore.save(activity, videoKey, segments)
-                    onStartLoop(newSeg)
-                    Toast.makeText(activity, "已保存并开始循环「${newSeg.name}」", Toast.LENGTH_SHORT).show()
-                    dismiss()
+                    Toast.makeText(activity, "已保存「${newSeg.name}」", Toast.LENGTH_SHORT).show()
+                    renderList()
                 }
             }
 
             actRow.addView(cancelBtn)
-            actRow.addView(View(activity), LinearLayout.LayoutParams(dp(12), 1))
+            actRow.addView(View(activity), LinearLayout.LayoutParams(dp(14), 1))
             actRow.addView(saveBtn)
             card.addView(actRow)
         }

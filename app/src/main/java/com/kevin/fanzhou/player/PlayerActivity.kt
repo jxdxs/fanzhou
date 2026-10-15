@@ -237,7 +237,17 @@ class PlayerActivity : ComponentActivity() {
     private fun loadQueueFromIntent(intent: Intent?) {
         val data: Uri? = intent?.data
         if (data != null) {
-            queue = mutableListOf(PlayItem(url = data.toString(), title = data.lastPathSegment ?: "视频"))
+            val url = data.toString()
+            val resumeKey = "url:${url.substringBefore('?')}"
+            val savedPos = Repo.store.position(resumeKey)
+            queue = mutableListOf(
+                PlayItem(
+                    url = url,
+                    title = data.lastPathSegment ?: "视频",
+                    startMs = savedPos,
+                    resumeKey = resumeKey
+                )
+            )
             PlayQueue.set(queue, 0)
         } else {
             queue = PlayQueue.items.toMutableList()
@@ -648,9 +658,11 @@ class PlayerActivity : ComponentActivity() {
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
         val bufMb = Repo.store.bufferSizeMb
-        val targetBytes = bufMb * 1024 * 1024
-        val minBufferMs = (bufMb * 250).coerceIn(15_000, 60_000)
-        val maxBufferMs = (bufMb * 800).coerceIn(50_000, 300_000)
+        val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
+        val safeBufMb = minOf(bufMb, maxOf(32, (maxHeapMb * 0.40).toInt()))
+        val targetBytes = safeBufMb * 1024 * 1024
+        val minBufferMs = (safeBufMb * 200).coerceIn(15_000, 45_000)
+        val maxBufferMs = (safeBufMb * 500).coerceIn(30_000, 120_000)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 minBufferMs,
@@ -660,7 +672,7 @@ class PlayerActivity : ComponentActivity() {
             )
             .setTargetBufferBytes(targetBytes)
             .setPrioritizeTimeOverSizeThresholds(false)
-            .setBackBuffer(30_000, true)
+            .setBackBuffer(20_000, true)
             .build()
         player = ExoPlayer.Builder(this, renderers)
             .setLoadControl(loadControl)
@@ -798,18 +810,26 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch { Repo.jellyfin(sid)?.reportStart(id, p.jfMediaSourceId, player.currentPosition) }
     }
 
+    private var hasResumedFromSaved = false
+
     private fun saveProgress(index: Int, posMs: Long, durMs: Long, stopped: Boolean) {
         val p = queue.getOrNull(index) ?: return
-        val finished = durMs > 0 && posMs > durMs * 0.95
-        p.resumeKey?.let { Repo.store.saveProgress(it, posMs, durMs, finished) }
+        val effectivePos = if (!hasResumedFromSaved && resumeTargetPos > 3000L && posMs < resumeTargetPos && posMs < 60_000L) {
+            resumeTargetPos
+        } else {
+            posMs
+        }
+        val finished = durMs > 0 && effectivePos > durMs * 0.95
+        val key = p.resumeKey ?: p.effectiveResumeKey
+        Repo.store.saveProgress(key, effectivePos, durMs, finished)
         val id = p.jfItemId ?: return
         val sid = p.sourceId ?: return
         val client = Repo.jellyfin(sid) ?: return
         val paused = !player.isPlaying
         // Use the application scope so the stop report survives activity teardown.
         kotlinx.coroutines.GlobalScope.launch {
-            if (stopped) client.reportStop(id, p.jfMediaSourceId, posMs)
-            else client.reportProgress(id, p.jfMediaSourceId, posMs, paused)
+            if (stopped) client.reportStop(id, p.jfMediaSourceId, effectivePos)
+            else client.reportProgress(id, p.jfMediaSourceId, effectivePos, paused)
         }
     }
 
@@ -831,8 +851,9 @@ class PlayerActivity : ComponentActivity() {
     private fun checkAbLoop() {
         val seg = activeAbSegment ?: return
         if (!::player.isInitialized) return
+        if (player.playbackState == Player.STATE_BUFFERING) return
         val pos = player.currentPosition
-        if (pos >= seg.endMs || pos < seg.startMs - 2000L) {
+        if (pos >= seg.endMs) {
             player.seekTo(seg.startMs)
         }
     }
@@ -952,6 +973,7 @@ class PlayerActivity : ComponentActivity() {
         if (savedPos <= 3000L) return
         val prompt = resumePromptView ?: return
         handler.removeCallbacks(resumeCountdownRunnable)
+        hasResumedFromSaved = false
         resumeTargetPos = savedPos
         resumeCountdown = 10
         resumePromptText?.text = "上次播放至 ${fmt(savedPos)} (10s)"
@@ -999,6 +1021,7 @@ class PlayerActivity : ComponentActivity() {
             }
             layoutParams = lp
             setOnClickListener {
+                hasResumedFromSaved = true
                 if (::player.isInitialized) {
                     player.seekTo(resumeTargetPos)
                     showHint("已跳转至上次播放位置")
@@ -1295,7 +1318,6 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        items += IconMenu.Item(R.drawable.ic_lock, "防误触") { lockScreen() }
         IconMenu.show(anchor, items)
     }
 
@@ -1884,6 +1906,9 @@ class PlayerActivity : ComponentActivity() {
             reason: Int
         ) {
             if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                if (resumeTargetPos > 3000L && newPosition.positionMs >= resumeTargetPos - 5000L) {
+                    hasResumedFromSaved = true
+                }
                 if (kotlin.math.abs(newPosition.positionMs - resumeTargetPos) > 1000L) {
                     dismissResumePrompt()
                 }
