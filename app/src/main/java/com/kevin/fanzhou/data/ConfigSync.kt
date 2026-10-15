@@ -87,6 +87,44 @@ object ConfigSync {
         get() = sync.getString("dav_enc_pass", "") ?: ""
         set(v) { sync.edit().putString("dav_enc_pass", v).apply() }
 
+    var davLoggedIn: Boolean
+        get() = sync.getBoolean("dav_logged_in", configured)
+        set(v) { sync.edit().putBoolean("dav_logged_in", v).apply() }
+
+    // SSH settings
+    var sshHost: String
+        get() = sync.getString("ssh_host", "") ?: ""
+        set(v) { sync.edit().putString("ssh_host", v.trim()).apply() }
+    var sshPort: String
+        get() = sync.getString("ssh_port", "22") ?: "22"
+        set(v) { sync.edit().putString("ssh_port", v.trim()).apply() }
+    var sshUser: String
+        get() = sync.getString("ssh_user", "") ?: ""
+        set(v) { sync.edit().putString("ssh_user", v.trim()).apply() }
+    var sshPass: String
+        get() = sync.getString("ssh_pass", "") ?: ""
+        set(v) { sync.edit().putString("ssh_pass", v).apply() }
+    var sshDir: String
+        get() = sync.getString("ssh_dir", "/fanzhou") ?: "/fanzhou"
+        set(v) { sync.edit().putString("ssh_dir", "/" + v.trim().trim('/')).apply() }
+    var sshLoggedIn: Boolean
+        get() = sync.getBoolean("ssh_logged_in", false)
+        set(v) { sync.edit().putBoolean("ssh_logged_in", v).apply() }
+
+    // Google Drive settings
+    var gdriveClientId: String
+        get() = sync.getString("gdrive_client_id", "") ?: ""
+        set(v) { sync.edit().putString("gdrive_client_id", v.trim()).apply() }
+    var gdriveClientSecret: String
+        get() = sync.getString("gdrive_client_secret", "") ?: ""
+        set(v) { sync.edit().putString("gdrive_client_secret", v.trim()).apply() }
+    var gdriveDir: String
+        get() = sync.getString("gdrive_dir", "fanzhou-backup") ?: "fanzhou-backup"
+        set(v) { sync.edit().putString("gdrive_dir", v.trim()).apply() }
+    var gdriveLoggedIn: Boolean
+        get() = sync.getBoolean("gdrive_logged_in", false)
+        set(v) { sync.edit().putBoolean("gdrive_logged_in", v).apply() }
+
     // ---- encryption & inspection ----
     data class BackupInfo(
         val isEncrypted: Boolean,
@@ -250,6 +288,33 @@ object ConfigSync {
     // ---- WebDAV ----
     private fun fileUrl(): String = davUrl.trimEnd('/') + davDir.trimEnd('/') + "/" + FILE_NAME
     private fun auth(): String = "Basic " + Base64.encodeToString("$davUser:$davPass".toByteArray(), Base64.NO_WRAP)
+
+    /** Tests WebDAV server connectivity and credentials. */
+    fun testDavLogin(url: String, user: String, pass: String): String {
+        val u = url.trim().trimEnd('/')
+        require(u.isNotBlank()) { "服务器地址不能为空" }
+        require(user.trim().isNotBlank()) { "用户名不能为空" }
+        val target = "$u/"
+        val authHeader = "Basic " + Base64.encodeToString("${user.trim()}:$pass".toByteArray(), Base64.NO_WRAP)
+        val req = Request.Builder()
+            .url(target)
+            .header("Authorization", authHeader)
+            .method("PROPFIND", "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:propfind xmlns:D=\"DAV:\"><D:prop><D:resourcetype/></D:prop></D:propfind>".toRequestBody("application/xml".toMediaType()))
+            .header("Depth", "0")
+            .build()
+        Repo.http.newCall(req).execute().use { resp ->
+            if (resp.code == 401) throw IllegalArgumentException("WebDAV 用户名或密码错误")
+            if (resp.code == 405) {
+                val opt = Request.Builder().url(target).header("Authorization", authHeader).build()
+                Repo.http.newCall(opt).execute().use { o ->
+                    if (o.code == 401) throw IllegalArgumentException("WebDAV 用户名或密码错误")
+                }
+            } else if (!resp.isSuccessful && resp.code != 404 && resp.code != 207) {
+                throw IllegalArgumentException("服务器响应异常（HTTP ${resp.code}）")
+            }
+        }
+        return "连接成功"
+    }
 
     /** Uploads the local config. Blocking; call off the main thread. */
     fun upload() {

@@ -173,6 +173,7 @@ data class PlayItem(
     val mime: String? = null,
     /** Container/extension hint (mkv, iso, rmvb…) used to pick the player core. */
     val container: String? = null,
+    val directResume: Boolean = false,
 ) {
     val effectiveResumeKey: String
         get() = resumeKey

@@ -105,7 +105,7 @@ fun HomeScreen(nav: NavHostController) {
                                     title = if (it.type == "Episode") it.seriesName ?: it.name else it.name,
                                     subtitle = if (it.type == "Episode") "${it.episodeLabel} ${it.name}" else it.year?.toString(),
                                     imageUrl = c.thumb(it), modifier = m, progress = it.progress,
-                                    onClick = { PlayerCore.start(context, listOf(c.playItem(it)), 0) },
+                                    onClick = { PlayerCore.start(context, listOf(c.playItem(it).copy(directResume = true)), 0) },
                                 )
                             }
                         }

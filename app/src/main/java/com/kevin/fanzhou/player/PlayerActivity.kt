@@ -714,7 +714,11 @@ class PlayerActivity : ComponentActivity() {
         val savedPos = startItem.startMs
         val isHandoffPlayback = isHandoff
         isHandoff = false
-        val initialSeek = if (isHandoffPlayback) savedPos else 0L
+        val isDirectResume = startItem.directResume && savedPos > 3000L
+        val initialSeek = if (isDirectResume || isHandoffPlayback) savedPos else 0L
+        if (startItem.directResume) {
+            queue[start] = startItem.copy(directResume = false)
+        }
 
         val remembered = Repo.store.qualityForSeries(startItem.seriesKey)
         if (!remembered.isNullOrEmpty() && remembered != "原画") {
@@ -731,19 +735,19 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
+        currentIndex = start
         val headers = queue.firstOrNull()?.headers ?: emptyMap()
         player.setMediaSources(queue.mapIndexed { i, p -> mediaSourceFactory(p.headers.ifEmpty { headers }).createMediaSource(toMediaItem(p, i)) }, start, initialSeek)
         player.playbackParameters = PlaybackParameters(Repo.store.defaultSpeed)
         player.pauseAtEndOfMediaItems = !Repo.store.autoPlayNext
         player.prepare()
         player.play()
-        currentIndex = start
         skipController.onIndexChanged(start, initialSeek)
         onItemStarted()
-        if (!isHandoffPlayback && savedPos > 3000L) {
+        if (!isHandoffPlayback && !isDirectResume && savedPos > 3000L) {
             showResumePrompt(savedPos)
         } else {
-            dismissResumePrompt()
+            dismissResumePrompt(immediate = true)
         }
         if (!remembered.isNullOrEmpty() && remembered != "原画") {
             preResolveUpcomingQualities(start + 1, remembered)
@@ -911,10 +915,14 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private fun dismissResumePrompt() {
+    private fun dismissResumePrompt(immediate: Boolean = false) {
         handler.removeCallbacks(resumeCountdownRunnable)
         resumePromptView?.let { prompt ->
-            if (prompt.visibility == View.VISIBLE) {
+            if (immediate) {
+                prompt.animate().cancel()
+                prompt.alpha = 0f
+                prompt.visibility = View.GONE
+            } else if (prompt.visibility == View.VISIBLE) {
                 prompt.animate().alpha(0f).setDuration(250).withEndAction {
                     prompt.visibility = View.GONE
                 }

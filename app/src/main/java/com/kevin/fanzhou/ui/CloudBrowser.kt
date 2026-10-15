@@ -376,10 +376,15 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                 ?: vids.indexOfFirst { it.name.substringBeforeLast('.') == r.name.substringBeforeLast('.') }.takeIf { it >= 0 }
                 ?: 0
             if (vids.isNotEmpty()) {
-                val items = vids.map { drive.playItem(it, sibs ?: vids).copy(cloudFolderKey = "$sid:$targetDir") }
+                val items = vids.mapIndexed { i, it ->
+                    drive.playItem(it, sibs ?: vids).copy(
+                        cloudFolderKey = "$sid:$targetDir",
+                        directResume = (i == idx)
+                    )
+                }
                 PlayerCore.start(context, items, idx)
             } else {
-                PlayerCore.start(context, listOf(drive.playItem(f, emptyList()).copy(cloudFolderKey = "$sid:$targetDir")), 0)
+                PlayerCore.start(context, listOf(drive.playItem(f, emptyList()).copy(cloudFolderKey = "$sid:$targetDir", directResume = true)), 0)
             }
         }
     }

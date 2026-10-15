@@ -362,7 +362,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val savedPos = p.startMs
         val isHandoffPlayback = isHandoff
         isHandoff = false
-        val initialSeek = if (isHandoffPlayback) savedPos else 0L
+        val isDirectResume = p.directResume && savedPos > 3000L
+        val initialSeek = if (isDirectResume || isHandoffPlayback) savedPos else 0L
+        if (p.directResume) {
+            queue[i] = p.copy(directResume = false)
+        }
 
         PlayerCore.bumpCloudRecent(p)
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
@@ -371,7 +375,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         skipController.onIndexChanged(i, initialSeek)
         updateChapterMarkers()
         dismissResumePrompt()
-        if (!isHandoffPlayback && savedPos > 3000L) {
+        if (!isHandoffPlayback && !isDirectResume && savedPos > 3000L) {
             showResumePrompt(savedPos)
         }
         updateMediaSessionMetadata(p)
