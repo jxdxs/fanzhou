@@ -47,6 +47,7 @@ class Drive123(source: Source) : CloudDrive(source) {
                 val name = f.str("filename") ?: f.str("fileName") ?: ""
                 val size = f.long("size")
                 val mod = parseIsoTime(f.str("updateAt") ?: f.str("updatedAt"))
+                val childCount = if (isDir) (f.intOrNull("fileCount") ?: f.intOrNull("file_count") ?: f.intOrNull("count")) else null
                 out.add(
                     CloudFile(
                         id = fid,
@@ -55,6 +56,7 @@ class Drive123(source: Source) : CloudDrive(source) {
                         size = size,
                         extra = f.str("etag"),
                         modified = mod,
+                        childCount = childCount,
                     )
                 )
             }

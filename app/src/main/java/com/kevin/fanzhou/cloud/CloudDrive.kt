@@ -29,6 +29,8 @@ data class CloudFile(
     val thumb: String? = null,
     /** Video duration in ms (0 = unknown). */
     val duration: Long = 0,
+    /** Folder item/child count when reported natively by the provider (null = unknown). */
+    val childCount: Int? = null,
 ) {
     val ext get() = name.substringAfterLast('.', "").lowercase()
     val isVideo get() = !isDir && ext in DavEntry.VIDEO_EXT
@@ -144,6 +146,8 @@ abstract class CloudDrive(var source: Source) {
 // ---- small JSON helpers ----
 fun JsonObject.str(k: String): String? = (this[k] as? JsonPrimitive)?.contentOrNull
 fun JsonObject.long(k: String): Long = (this[k] as? JsonPrimitive)?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() } ?: 0L
+fun JsonObject.int(k: String): Int = (this[k] as? JsonPrimitive)?.let { it.contentOrNull?.toIntOrNull() } ?: 0
+fun JsonObject.intOrNull(k: String): Int? = (this[k] as? JsonPrimitive)?.let { it.contentOrNull?.toIntOrNull() }
 fun JsonObject.bool(k: String): Boolean? = (this[k] as? JsonPrimitive)?.let { it.booleanOrNull ?: it.contentOrNull?.let { c -> c == "1" || c == "true" } }
 fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 

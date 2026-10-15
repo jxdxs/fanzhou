@@ -57,12 +57,14 @@ class QuarkDrive(source: Source) : CloudDrive(source) {
                     rawThumb.startsWith("//") -> "https:$rawThumb"
                     else -> null
                 }
+                val childCount = if (!isFile) (f.intOrNull("file_num") ?: f.intOrNull("sub_file_num") ?: f.intOrNull("count")) else null
                 out.add(
                     CloudFile(
                         f.str("fid") ?: "", android.text.Html.fromHtml(f.str("file_name") ?: "", 0).toString(), !isFile, f.long("size"),
                         modified = epochMs(listOf("updated_at", "l_updated_at", "created_at").map { k -> f.long(k) }.firstOrNull { it > 0 } ?: 0),
                         thumb = thumbUrl,
                         duration = (durSec * 1000).toLong(),
+                        childCount = childCount,
                     )
                 )
             }

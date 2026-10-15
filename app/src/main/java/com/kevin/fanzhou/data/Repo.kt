@@ -18,6 +18,7 @@ object Repo {
 
     fun init(context: Context) {
         store = Store(context)
+        FolderStatCache.init(context)
         // Home servers often use self-signed certificates, so trust them.
         val trustAll = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}

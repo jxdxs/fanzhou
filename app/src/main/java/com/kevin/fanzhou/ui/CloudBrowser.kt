@@ -65,6 +65,7 @@ import com.kevin.fanzhou.cloud.CloudFile
 import com.kevin.fanzhou.cloud.VideoThumbnails
 import com.kevin.fanzhou.data.CloudFav
 import com.kevin.fanzhou.data.CloudRecent
+import com.kevin.fanzhou.data.FolderStatCache
 import com.kevin.fanzhou.data.PlayQueue
 import com.kevin.fanzhou.data.Repo
 import com.kevin.fanzhou.data.Tmdb
@@ -102,8 +103,28 @@ fun cloudDateText(ms: Long): String {
 private fun fullDateText(ms: Long): String =
     if (ms <= 0) "未知" else java.time.Instant.ofEpochMilli(ms).atZone(SYSTEM_ZONE).format(FULL_DATE_FORMATTER)
 
-private fun metaLine(f: CloudFile): String = listOf(
-    if (f.isDir) "文件夹" else sizeText(f.size),
+fun folderDesc(f: CloudFile, sid: String? = null): String {
+    if (!f.isDir) return ""
+    val stat = if (sid != null) FolderStatCache.get(sid, f.id) else null
+    if (stat != null) {
+        return when {
+            stat.videoCount > 0 && stat.videoCount != stat.total -> "${stat.videoCount} 个视频 · 共 ${stat.total} 项"
+            stat.videoCount > 0 && stat.videoCount == stat.total -> "${stat.total} 个视频"
+            stat.total == 0 -> "空文件夹"
+            else -> "共 ${stat.total} 项"
+        }
+    }
+    if (f.childCount != null && f.childCount >= 0) {
+        return if (f.childCount == 0) "空文件夹" else "${f.childCount} 项"
+    }
+    if (f.size > 0) {
+        return "文件夹 · ${sizeText(f.size)}"
+    }
+    return "文件夹"
+}
+
+private fun metaLine(f: CloudFile, sid: String? = null): String = listOf(
+    if (f.isDir) folderDesc(f, sid) else sizeText(f.size),
     if (f.duration > 0) fmtMs(f.duration) else "",
     cloudDateText(f.modified),
 ).filter { it.isNotEmpty() }.joinToString(" · ")
@@ -225,6 +246,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     val hasTmdb = store.tmdbKey.isNotEmpty()
     val headers = drive.thumbHeaders
 
+    val statVer by FolderStatCache.version.collectAsState()
     var entries by remember { mutableStateOf<List<CloudFile>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
@@ -280,6 +302,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
 
     LaunchedEffect(entries) {
         val list = entries ?: return@LaunchedEffect
+        FolderStatCache.put(sid, dir, list)
         // Prefetch only the first screen (16 items) to avoid overloading network & memory.
         // Offscreen items will be lazily extracted when scrolled into view.
         val vids = list.filter { it.isVideo && it.thumb == null }.take(16)
@@ -445,6 +468,15 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                             HorizontalDivider()
                             MenuRow("文件夹置顶", foldersFirst) { foldersFirst = !foldersFirst; store.cloudFoldersFirst = foldersFirst }
                             MenuRow("只显示视频", videosOnly) { videosOnly = !videosOnly; store.cloudVideosOnly = videosOnly }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("当前文件夹信息") },
+                                leadingIcon = { Icon(Icons.Filled.Info, null, Modifier.size(20.dp)) },
+                                onClick = {
+                                    sortMenu = false
+                                    infoFile = CloudFile(id = dir, name = title ?: drive.source.name, isDir = true)
+                                },
+                            )
                         }
                     }
                     IconButton(onClick = {
@@ -539,7 +571,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                         ) {
                             ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 36, sid = sid)
                             Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
-                            val meta = metaLine(f) + when {
+                            val meta = metaLine(f, sid) + when {
                                 isFin -> " · 已看完"
                                 pos > 0 -> " · 看到 ${fmtMs(pos)}"
                                 else -> ""
@@ -564,7 +596,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                         val isFin = remember(key, resumeTick) { if (f.isVideo) store.isFinished(key) else false }
                         PosterCard(
                             title = if (f.isDir || !f.isVideo) f.name else Tmdb.guess(f.name).title,
-                            subtitle = if (f.isDir) "文件夹" else sizeText(f.size),
+                            subtitle = if (f.isDir) folderDesc(f, sid) else sizeText(f.size),
                             imageUrl = poster ?: localThumb?.absolutePath ?: f.thumb,
                             modifier = Modifier.alpha(if (f.isDir || f.isVideo) 1f else 0.45f),
                             progress = progress,
@@ -658,30 +690,149 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     }
 
     infoFile?.let { f ->
-        val fullPath = "/" + (crumbs.drop(1) + f.name).joinToString("/")
-        AlertDialog(
-            onDismissRequest = { infoFile = null },
-            confirmButton = { TextButton(onClick = { infoFile = null }) { Text("关闭") } },
-            dismissButton = {
-                TextButton(onClick = {
-                    clipboard.setText(AnnotatedString(f.name)); infoFile = null
-                    android.widget.Toast.makeText(context, "已复制文件名", android.widget.Toast.LENGTH_SHORT).show()
-                }) { Text("复制文件名") }
-            },
-            title = { Text("文件信息") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    InfoLine("名称", f.name)
-                    if (!f.isDir) InfoLine("大小", sizeText(f.size).ifEmpty { "未知" } + if (f.size > 0) "（${"%,d".format(f.size)} 字节）" else "")
-                    if (f.duration > 0) InfoLine("时长", fmtMs(f.duration))
-                    InfoLine("修改时间", fullDateText(f.modified))
-                    InfoLine("位置", "${drive.source.typeLabel} · $fullPath")
-                    val p = store.position(posKey(sid, f.id))
-                    if (p > 0) InfoLine("播放进度", "看到 ${fmtMs(p)}")
-                }
-            },
-        )
+        if (f.isDir) {
+            FolderInfoDialog(
+                f = f,
+                sid = sid,
+                drive = drive,
+                crumbs = crumbs,
+                currentDir = dir,
+                onDismiss = { infoFile = null },
+            )
+        } else {
+            val fullPath = "/" + (crumbs.drop(1) + f.name).joinToString("/")
+            AlertDialog(
+                onDismissRequest = { infoFile = null },
+                confirmButton = { TextButton(onClick = { infoFile = null }) { Text("关闭") } },
+                dismissButton = {
+                    TextButton(onClick = {
+                        clipboard.setText(AnnotatedString(f.name)); infoFile = null
+                        android.widget.Toast.makeText(context, "已复制文件名", android.widget.Toast.LENGTH_SHORT).show()
+                    }) { Text("复制文件名") }
+                },
+                title = { Text("文件信息") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        InfoLine("名称", f.name)
+                        InfoLine("大小", sizeText(f.size).ifEmpty { "未知" } + if (f.size > 0) "（${"%,d".format(f.size)} 字节）" else "")
+                        if (f.duration > 0) InfoLine("时长", fmtMs(f.duration))
+                        InfoLine("修改时间", fullDateText(f.modified))
+                        InfoLine("位置", "${drive.source.typeLabel} · $fullPath")
+                        val p = store.position(posKey(sid, f.id))
+                        if (p > 0) InfoLine("播放进度", "看到 ${fmtMs(p)}")
+                    }
+                },
+            )
+        }
     }
+}
+
+@Composable
+private fun FolderInfoDialog(
+    f: CloudFile,
+    sid: String,
+    drive: CloudDrive,
+    crumbs: List<String>,
+    currentDir: String,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val isCurrent = f.id == currentDir
+    val fullPath = if (isCurrent) {
+        "/" + crumbs.drop(1).joinToString("/")
+    } else {
+        "/" + (crumbs.drop(1) + f.name).joinToString("/")
+    }
+
+    var stat by remember(f.id) { mutableStateOf(FolderStatCache.get(sid, f.id)) }
+    var loading by remember(f.id) { mutableStateOf(true) }
+    var error by remember(f.id) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(f.id) {
+        loading = true
+        error = null
+        try {
+            val list = withContext(Dispatchers.IO) { drive.list(f.id) }
+            val s = FolderStatCache.put(sid, f.id, list)
+            stat = s
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = e.message ?: "获取统计失败"
+        } finally {
+            loading = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = {
+            TextButton(onClick = {
+                clipboard.setText(AnnotatedString(f.name))
+                onDismiss()
+                android.widget.Toast.makeText(context, "已复制文件夹名", android.widget.Toast.LENGTH_SHORT).show()
+            }) { Text("复制名称") }
+        },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(painterResource(R.drawable.ic_folder), null, tint = FolderColor, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("文件夹信息", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                InfoLine("名称", f.name)
+
+                val currentStat = stat
+                if (currentStat != null) {
+                    val detail = listOfNotNull(
+                        if (currentStat.videoCount > 0) "${currentStat.videoCount} 个视频" else null,
+                        if (currentStat.dirCount > 0) "${currentStat.dirCount} 个子文件夹" else null,
+                        if (currentStat.otherCount > 0) "${currentStat.otherCount} 个其他文件" else null,
+                    ).joinToString("，")
+                    InfoLine("包含内容", if (currentStat.total == 0) "空文件夹" else "共 ${currentStat.total} 项" + if (detail.isNotEmpty()) "（$detail）" else "")
+
+                    val sizeVal = if (currentStat.totalSize > 0) currentStat.totalSize else f.size
+                    if (sizeVal > 0) {
+                        InfoLine("包含文件总大小", sizeText(sizeVal) + "（${"%,d".format(sizeVal)} 字节）")
+                    } else {
+                        InfoLine("包含文件总大小", if (currentStat.total == 0) "0 字节" else "未知")
+                    }
+                } else if (f.childCount != null) {
+                    InfoLine("包含内容", if (f.childCount == 0) "空文件夹" else "共 ${f.childCount} 项")
+                    if (f.size > 0) InfoLine("包含文件总大小", sizeText(f.size) + "（${"%,d".format(f.size)} 字节）")
+                }
+
+                if (loading) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Accent)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (currentStat != null) "正在刷新最新统计…" else "正在深度统计文件夹内容…",
+                            fontSize = 12.sp,
+                            color = TextDim,
+                        )
+                    }
+                } else if (error != null && currentStat == null) {
+                    Text("统计提示：$error", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                }
+
+                if (f.modified > 0) {
+                    InfoLine("修改时间", fullDateText(f.modified))
+                }
+                InfoLine("位置", "${drive.source.typeLabel} · $fullPath")
+            }
+        },
+    )
 }
 
 @Composable
@@ -773,7 +924,7 @@ private fun CloudItemMenuDialog(
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium,
                             )
-                            val m = metaLine(f)
+                            val m = metaLine(f, sid)
                             if (m.isNotEmpty()) {
                                 Text(
                                     m,
@@ -822,12 +973,12 @@ private fun CloudItemMenuDialog(
                                 onDismiss(); onToggleFav()
                             }
                         }
-                        SheetRow(null, R.drawable.ic_copy, "复制文件名") {
+                        SheetRow(null, R.drawable.ic_copy, if (f.isDir) "复制文件夹名" else "复制文件名") {
                             clipboard.setText(AnnotatedString(f.name))
                             onDismiss()
-                            android.widget.Toast.makeText(context, "已复制文件名", android.widget.Toast.LENGTH_SHORT).show()
+                            android.widget.Toast.makeText(context, if (f.isDir) "已复制文件夹名" else "已复制文件名", android.widget.Toast.LENGTH_SHORT).show()
                         }
-                        SheetRow(Icons.Filled.Info, null, "文件信息") { onDismiss(); onInfo() }
+                        SheetRow(Icons.Filled.Info, null, if (f.isDir) "文件夹信息" else "文件信息") { onDismiss(); onInfo() }
                         if (!f.id.endsWith("/root")) {
                             SheetRow(Icons.Filled.Edit, null, "重命名") { onDismiss(); onRename() }
                             SheetRow(
@@ -1035,7 +1186,7 @@ private fun FileRow(f: CloudFile, headers: Map<String, String>, pos: Long, sid: 
         Column(Modifier.weight(1f)) {
             Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, lineHeight = 18.sp)
             Spacer(Modifier.height(4.dp))
-            val meta = metaLine(f)
+            val meta = metaLine(f, sid)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (meta.isNotEmpty()) Text(meta, fontSize = 11.sp, color = TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 if (isFin) {

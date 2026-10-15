@@ -139,12 +139,14 @@ class AliyunDrive(source: Source) : CloudDrive(source) {
                     rawThumb.startsWith("//") -> "https:$rawThumb"
                     else -> null
                 }
+                val childCount = if (isDir) (f.intOrNull("file_count") ?: f.intOrNull("sub_folder_count") ?: f.intOrNull("count")) else null
                 out.add(
                     CloudFile(
                         if (isDir) "$driveId/$id" else id, f.str("name") ?: "", isDir, f.long("size"), driveId,
                         modified = parseIsoTime(f.str("updated_at") ?: f.str("created_at")),
                         thumb = thumbUrl,
                         duration = (dur * 1000).toLong(),
+                        childCount = childCount,
                     )
                 )
             }

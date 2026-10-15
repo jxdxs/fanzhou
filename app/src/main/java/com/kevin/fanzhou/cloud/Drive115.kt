@@ -52,8 +52,19 @@ class Drive115(source: Source) : CloudDrive(source) {
                             duration = (it.num("play_long") * 1000).toLong(),
                         )
                     )
+                } else {
+                    val count = it.intOrNull("c") ?: it.intOrNull("fc") ?: it.intOrNull("count")
+                    out.add(
+                        CloudFile(
+                            id = it.str("cid") ?: "",
+                            name = it.str("n") ?: "",
+                            isDir = true,
+                            size = it.long("s"),
+                            modified = mod,
+                            childCount = count,
+                        )
+                    )
                 }
-                else out.add(CloudFile(it.str("cid") ?: "", it.str("n") ?: "", true, modified = mod))
             }
             val count = o.long("count").toInt()
             offset += data.size
