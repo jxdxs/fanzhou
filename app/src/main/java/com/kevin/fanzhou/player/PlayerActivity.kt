@@ -714,11 +714,8 @@ class PlayerActivity : ComponentActivity() {
         val savedPos = startItem.startMs
         val isHandoffPlayback = isHandoff
         isHandoff = false
-        val isDirectResume = startItem.directResume && savedPos > 3000L
+        val isDirectResume = savedPos > 3000L
         val initialSeek = if (isDirectResume || isHandoffPlayback) savedPos else 0L
-        if (startItem.directResume) {
-            queue[start] = startItem.copy(directResume = false)
-        }
 
         val remembered = Repo.store.qualityForSeries(startItem.seriesKey)
         if (!remembered.isNullOrEmpty() && remembered != "原画") {

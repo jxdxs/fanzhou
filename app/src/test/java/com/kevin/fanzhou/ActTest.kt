@@ -266,13 +266,12 @@ class ActTest {
     }
 
     @Test
-    fun testDirectoryPlayKeepsResumePrompt() {
-        val saved = 300_000L
+    fun testFolderPlayDirectResumes() {
+        val saved = 250_000L
         val item = com.kevin.fanzhou.data.PlayItem(
             url = "file:///sdcard/folder_vid.mp4",
             title = "Folder Video",
-            startMs = saved,
-            directResume = false
+            startMs = saved
         )
         com.kevin.fanzhou.data.PlayQueue.set(listOf(item), 0)
 
@@ -283,10 +282,44 @@ class ActTest {
 
         val resumePromptField = PlayerActivity::class.java.getDeclaredField("resumePromptView").apply { isAccessible = true }
         val promptView = resumePromptField.get(act) as? View
-        org.junit.Assert.assertEquals("Resume prompt should be visible when directResume is false", View.VISIBLE, promptView?.visibility)
+        org.junit.Assert.assertTrue("Resume prompt should not be visible when entering from folder", promptView == null || promptView.visibility != View.VISIBLE)
 
         val playerField = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
         val player = playerField.get(act) as androidx.media3.exoplayer.ExoPlayer
-        org.junit.Assert.assertEquals("Player should start at 0 before user confirms resume", 0L, player.currentPosition)
+        org.junit.Assert.assertEquals("Player should immediately seek to saved position for folder video", saved, player.currentPosition)
+    }
+
+    @Test
+    fun testNextEpisodeInPlayerStartsFromZeroWithPrompt() {
+        val item1 = com.kevin.fanzhou.data.PlayItem(
+            url = "file:///sdcard/ep1.mp4",
+            title = "Episode 1",
+            startMs = 300_000L
+        )
+        val item2 = com.kevin.fanzhou.data.PlayItem(
+            url = "file:///sdcard/ep2.mp4",
+            title = "Episode 2",
+            startMs = 150_000L
+        )
+        com.kevin.fanzhou.data.PlayQueue.set(listOf(item1, item2), 0)
+
+        val i = Intent(org.robolectric.RuntimeEnvironment.getApplication(), PlayerActivity::class.java)
+        val ctl = Robolectric.buildActivity(PlayerActivity::class.java, i).setup()
+        val act = ctl.get()
+        repeat(5) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100)) }
+
+        val playerField = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
+        val player = playerField.get(act) as androidx.media3.exoplayer.ExoPlayer
+        org.junit.Assert.assertEquals("Ep1 should direct resume", 300_000L, player.currentPosition)
+
+        // User clicks "下一集" in player interface
+        player.seekTo(1, 0L)
+        player.play()
+        repeat(5) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100)) }
+
+        val resumePromptField = PlayerActivity::class.java.getDeclaredField("resumePromptView").apply { isAccessible = true }
+        val promptView = resumePromptField.get(act) as? View
+        org.junit.Assert.assertEquals("Next episode should show resume prompt", View.VISIBLE, promptView?.visibility)
+        org.junit.Assert.assertEquals("Next episode should start from zero by default", 0L, player.currentPosition)
     }
 }

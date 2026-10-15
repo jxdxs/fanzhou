@@ -132,6 +132,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private val aspectNames = arrayOf("适应", "裁剪填充", "拉伸")
     private var longPressActive = false
     private var speedBeforeLongPress = 1.0
+    private var isInitialPlay = true
     private val posMs get() = (posSec * 1000).toLong()
     private val durMs get() = (durSec * 1000).toLong()
 
@@ -231,6 +232,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         qualityCache.clear(); folderQualityApplied.clear(); jfFallbackTried.clear(); cloudLadderStep.clear()
         queue = PlayQueue.items.toMutableList()
         if (queue.isEmpty()) { finish(); return }
+        isInitialPlay = true
         playIndex(PlayQueue.index.coerceIn(0, queue.size - 1))
     }
 
@@ -362,11 +364,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val savedPos = p.startMs
         val isHandoffPlayback = isHandoff
         isHandoff = false
-        val isDirectResume = p.directResume && savedPos > 3000L
+        val isDirectResume = isInitialPlay && savedPos > 3000L
+        isInitialPlay = false
         val initialSeek = if (isDirectResume || isHandoffPlayback) savedPos else 0L
-        if (p.directResume) {
-            queue[i] = p.copy(directResume = false)
-        }
 
         PlayerCore.bumpCloudRecent(p)
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
@@ -374,7 +374,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         durSec = 0.0
         skipController.onIndexChanged(i, initialSeek)
         updateChapterMarkers()
-        dismissResumePrompt()
+        if (isDirectResume) {
+            dismissResumePrompt(immediate = true)
+        } else {
+            dismissResumePrompt()
+        }
         if (!isHandoffPlayback && !isDirectResume && savedPos > 3000L) {
             showResumePrompt(savedPos)
         }
@@ -890,10 +894,14 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
     }
 
-    private fun dismissResumePrompt() {
+    private fun dismissResumePrompt(immediate: Boolean = false) {
         handler.removeCallbacks(resumeCountdownRunnable)
         resumePromptView?.let { prompt ->
-            if (prompt.visibility == View.VISIBLE) {
+            if (immediate) {
+                prompt.animate().cancel()
+                prompt.alpha = 0f
+                prompt.visibility = View.GONE
+            } else if (prompt.visibility == View.VISIBLE) {
                 prompt.animate().alpha(0f).setDuration(250).withEndAction {
                     prompt.visibility = View.GONE
                 }
