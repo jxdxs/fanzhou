@@ -42,6 +42,7 @@ fun SettingsScreen() {
     var voiceEnhance by remember { mutableStateOf(store.voiceEnhance) }
     var volumeBoost by remember { mutableFloatStateOf(store.volumeBoost) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
+    var bufferMb by remember { mutableIntStateOf(store.bufferSizeMb) }
     var gridMin by remember { mutableIntStateOf(store.gridColumnsMin) }
     var core by remember { mutableStateOf(store.playerCore) }
     var hwdec by remember { mutableStateOf(store.mpvHwdec) }
@@ -78,7 +79,7 @@ fun SettingsScreen() {
             }
             val introText = if (introSkip == 0) "片头关" else "片头 ${introSkip} 秒"
             val outroText = if (outroSkip == 0) "片尾关" else "片尾 ${outroSkip} 秒"
-            Group("播放", "${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒 · $introText · $outroText" + if (autoNext) " · 自动下一集" else "") {
+            Group("播放", "缓存 ${bufferMb}MB · ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒 · $introText · $outroText" + if (autoNext) " · 自动下一集" else "") {
                 Text("默认倍速：${"%.2f".format(speed).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(speed, { speed = (Math.round(it * 4) / 4f); store.defaultSpeed = speed }, valueRange = 0.5f..3f, steps = 9)
                 Text("双击快进/快退：${step} 秒", fontSize = 14.sp)
@@ -87,6 +88,16 @@ fun SettingsScreen() {
                 Slider(introSkip.toFloat(), { introSkip = (Math.round(it / 5) * 5).toInt(); store.introSkipSec = introSkip }, valueRange = 0f..180f, steps = 35)
                 Text("跳过片尾：${if (outroSkip == 0) "关闭" else "${outroSkip} 秒"}", fontSize = 14.sp)
                 Slider(outroSkip.toFloat(), { outroSkip = (Math.round(it / 5) * 5).toInt(); store.outroSkipSec = outroSkip }, valueRange = 0f..300f, steps = 59)
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                Text("播放缓存加载大小：${bufferMb} MB", fontSize = 14.sp)
+                Text("增大缓存可抵抗网络抖动与云盘限速波动，实现平稳流畅播放；设备内存紧张时建议 64MB ~ 128MB", fontSize = 12.sp, color = TextDim)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(32 to "32M", 64 to "64M", 128 to "128M", 256 to "256M", 512 to "512M").forEach { (mb, name) ->
+                        FilterChip(selected = bufferMb == mb, onClick = { bufferMb = mb; store.bufferSizeMb = mb }, label = { Text(name) })
+                    }
+                }
+                Slider(bufferMb.toFloat(), { bufferMb = (Math.round(it / 32) * 32).toInt().coerceIn(32, 512); store.bufferSizeMb = bufferMb }, valueRange = 32f..512f, steps = 14)
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("字幕大小：${"%.2f".format(subScale).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(subScale, { subScale = (Math.round(it * 20) / 20f); store.subtitleScale = subScale }, valueRange = 0.8f..2.2f, steps = 13)
                 Text("字幕颜色：${when(subColor) { "yellow" -> "电影黄"; "cyan" -> "清爽青"; else -> "经典白" }}", fontSize = 14.sp)

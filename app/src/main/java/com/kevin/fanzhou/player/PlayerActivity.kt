@@ -24,6 +24,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -56,6 +57,7 @@ import androidx.media3.extractor.metadata.id3.ChapterFrame
 import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import androidx.media3.ui.DefaultTimeBar
 import androidx.media3.ui.TimeBar
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -92,6 +94,7 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var audio: AudioManager
     private val handler = Handler(Looper.getMainLooper())
     private var isEnteringPip = false
+    private var activeAbSegment: AbSegment? = null
 
     private var queue: MutableList<PlayItem> = mutableListOf()
     private var currentIndex = -1
@@ -281,6 +284,21 @@ class PlayerActivity : ComponentActivity() {
         }
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
 
+        val pipLayoutListener = View.OnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (left != oldLeft || right != oldRight || top != oldTop || bottom != oldBottom) {
+                val w = right - left
+                val oldW = oldRight - oldLeft
+                val isExpanding = (oldW > 0 && w > oldW * 1.5) || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isInPictureInPictureMode)
+                if (isExpanding) {
+                    updatePipParams(force = true)
+                } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !isInPictureInPictureMode) {
+                    updatePipParams(force = false)
+                }
+            }
+        }
+        playerView.addOnLayoutChangeListener(pipLayoutListener)
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)?.addOnLayoutChangeListener(pipLayoutListener)
+
         playerView.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.addListener(object : TimeBar.OnScrubListener {
             override fun onScrubStart(timeBar: TimeBar, position: Long) { dismissResumePrompt() }
             override fun onScrubMove(timeBar: TimeBar, position: Long) {}
@@ -363,6 +381,7 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_episodes)?.setOnClickListener { v -> showEpisodeMenu(v) }
         playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener { v -> showPlayerSettingsMenu(v) }
         playerView.findViewById<View>(R.id.fz_subtitle)?.setOnClickListener { v -> showTextTrackMenu(v) }
+        playerView.findViewById<View>(R.id.fz_ab)?.setOnClickListener { showAbLoopDialog() }
         updateSpeedLabel()
 
 
@@ -442,6 +461,7 @@ class PlayerActivity : ComponentActivity() {
         resizeMode = (resizeMode + 1) % resizeModes.size
         playerView.resizeMode = resizeModes[resizeMode]
         showHint(resizeNames[resizeMode])
+        updatePipParams()
     }
 
     private fun isTouchInControlArea(rawX: Int, rawY: Int): Boolean {
@@ -627,7 +647,23 @@ class PlayerActivity : ComponentActivity() {
         val renderers = DefaultRenderersFactory(this)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+        val bufMb = Repo.store.bufferSizeMb
+        val targetBytes = bufMb * 1024 * 1024
+        val minBufferMs = (bufMb * 250).coerceIn(15_000, 60_000)
+        val maxBufferMs = (bufMb * 800).coerceIn(50_000, 300_000)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                minBufferMs,
+                maxBufferMs,
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+            )
+            .setTargetBufferBytes(targetBytes)
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .setBackBuffer(30_000, true)
+            .build()
         player = ExoPlayer.Builder(this, renderers)
+            .setLoadControl(loadControl)
             .setSeekBackIncrementMs(Repo.store.seekStepSec * 1000L)
             .setSeekForwardIncrementMs(Repo.store.seekStepSec * 1000L)
             .setHandleAudioBecomingNoisy(true)
@@ -752,6 +788,7 @@ class PlayerActivity : ComponentActivity() {
     private fun onItemStarted() {
         val p = queue.getOrNull(currentIndex) ?: return
         PlayerCore.bumpCloudRecent(p)
+        activeAbSegment = null
         updateSpeedLabel()
         applyFolderQuality()
         attachSavedSub()
@@ -791,10 +828,20 @@ class PlayerActivity : ComponentActivity() {
 
     private val skipController = PlayerSkipController()
 
+    private fun checkAbLoop() {
+        val seg = activeAbSegment ?: return
+        if (!::player.isInitialized) return
+        val pos = player.currentPosition
+        if (pos >= seg.endMs || pos < seg.startMs - 2000L) {
+            player.seekTo(seg.startMs)
+        }
+    }
+
     private val skipCheckTick = object : Runnable {
         override fun run() {
             checkAutoSkip()
-            handler.postDelayed(this, 500)
+            checkAbLoop()
+            handler.postDelayed(this, if (activeAbSegment != null) 200 else 500)
         }
     }
 
@@ -1062,9 +1109,44 @@ class PlayerActivity : ComponentActivity() {
         playerView.findViewById<View>(R.id.fz_audio)?.visibility = View.VISIBLE
         playerView.findViewById<View>(R.id.fz_episodes)?.visibility =
             if (queue.size <= 1) View.GONE else View.VISIBLE
+        playerView.findViewById<View>(R.id.fz_ab)?.visibility = View.VISIBLE
+        updateAbButtonState()
         val t = playerView.findViewById<TextView>(R.id.fz_speed) ?: return
         t.visibility = View.VISIBLE
         if (::player.isInitialized) t.text = fmtSpeed(player.playbackParameters.speed)
+    }
+
+    private fun showAbLoopDialog() {
+        val p = queue.getOrNull(currentIndex) ?: return
+        val curPos = if (::player.isInitialized) player.currentPosition else 0L
+        val dur = if (::player.isInitialized) player.duration.coerceAtLeast(0L) else 0L
+        val container = findViewById<ViewGroup>(android.R.id.content)
+        AbLoopDialog.show(
+            activity = this,
+            root = container,
+            videoKey = p.effectiveResumeKey,
+            currentPosMs = curPos,
+            durationMs = dur,
+            activeSegmentId = activeAbSegment?.id,
+            fmt = { fmt(it) },
+            onStartLoop = { seg ->
+                activeAbSegment = seg
+                player.seekTo(seg.startMs)
+                updateAbButtonState()
+                showHint("🔁 循环「${seg.name}」")
+            },
+            onStopLoop = {
+                activeAbSegment = null
+                updateAbButtonState()
+                showHint("已退出 AB 循环")
+            }
+        )
+    }
+
+    private fun updateAbButtonState() {
+        val abBtn = playerView.findViewById<TextView>(R.id.fz_ab) ?: return
+        val isLooping = activeAbSegment != null
+        abBtn.setTextColor(if (isLooping) 0xFF42A5F5.toInt() else Color.WHITE)
     }
 
     private fun updateSubtitleButton() {
@@ -1766,6 +1848,15 @@ class PlayerActivity : ComponentActivity() {
                 if (pendingOnlineSubLabel != null) selectOnlineSubtitleTrack()
                 checkAutoSkip()
             }
+            updatePipParams()
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            updatePipParams()
+        }
+
+        override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+            updatePipParams()
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -2076,6 +2167,80 @@ class PlayerActivity : ComponentActivity() {
 
     // ---------------- PiP & lifecycle ----------------
 
+    private fun computePipAspectRatio(): Rational {
+        val p = if (::player.isInitialized) player else null
+        val vs = p?.videoSize
+        val vw = vs?.width?.takeIf { it > 0 } ?: (p?.videoFormat?.width ?: 0)
+        val vh = vs?.height?.takeIf { it > 0 } ?: (p?.videoFormat?.height ?: 0)
+        val ratio = if (vw > 0 && vh > 0) Rational(vw, vh) else Rational(16, 9)
+        return when {
+            ratio.toFloat() > 2.39f -> Rational(239, 100)
+            ratio.toFloat() < 0.42f -> Rational(42, 100)
+            else -> ratio
+        }
+    }
+
+    private fun computePipSourceRect(): Rect {
+        if (!::playerView.isInitialized) return Rect()
+        val contentFrame = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+        val rect = Rect()
+        if (contentFrame != null && contentFrame.getGlobalVisibleRect(rect) && rect.width() > 0 && rect.height() > 0) {
+            return rect
+        }
+        val pRect = Rect()
+        if (playerView.getGlobalVisibleRect(pRect) && pRect.width() > 0 && pRect.height() > 0) {
+            val p = if (::player.isInitialized) player else null
+            val vs = p?.videoSize
+            val vw = vs?.width?.takeIf { it > 0 } ?: (p?.videoFormat?.width ?: 0)
+            val vh = vs?.height?.takeIf { it > 0 } ?: (p?.videoFormat?.height ?: 0)
+            if (vw > 0 && vh > 0) {
+                val pw = pRect.width()
+                val ph = pRect.height()
+                val videoAspect = vw.toFloat() / vh
+                val viewAspect = pw.toFloat() / ph
+                val (rw, rh) = if (videoAspect > viewAspect) {
+                    pw to (pw / videoAspect).toInt().coerceAtLeast(1)
+                } else {
+                    (ph * videoAspect).toInt().coerceAtLeast(1) to ph
+                }
+                val left = pRect.left + (pw - rw) / 2
+                val top = pRect.top + (ph - rh) / 2
+                return Rect(left, top, left + rw, top + rh)
+            }
+            return pRect
+        }
+        return rect
+    }
+
+    private fun buildPipParams(forAutoEnter: Boolean = false): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(computePipAspectRatio())
+
+        val sourceRect = computePipSourceRect()
+        if (sourceRect.width() > 0 && sourceRect.height() > 0) {
+            builder.setSourceRectHint(sourceRect)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setSeamlessResizeEnabled(true)
+            val canAutoEnter = forAutoEnter || (::player.isInitialized && player.isPlaying && !isEnteringPip && (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !isInPictureInPictureMode))
+            builder.setAutoEnterEnabled(canAutoEnter)
+        }
+        return builder.build()
+    }
+
+    private fun updatePipParams(force: Boolean = false) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode && !force) {
+            return
+        }
+        val params = buildPipParams() ?: return
+        try {
+            setPictureInPictureParams(params)
+        } catch (_: Exception) {}
+    }
+
     private fun enterPip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         if (!::player.isInitialized) return
@@ -2086,34 +2251,13 @@ class PlayerActivity : ComponentActivity() {
         rotateBtn.visibility = View.GONE
         if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
         hintView.visibility = View.GONE
+        dismissResumePrompt()
 
-        val fmt = player.videoFormat
-        val vw = fmt?.width ?: 0
-        val vh = fmt?.height ?: 0
-        val ratio = if (vw > 0 && vh > 0) Rational(vw, vh) else Rational(16, 9)
-        val clamped = when {
-            ratio.toFloat() > 2.39f -> Rational(239, 100)
-            ratio.toFloat() < 0.42f -> Rational(42, 100)
-            else -> ratio
-        }
-        val builder = PictureInPictureParams.Builder()
-            .setAspectRatio(clamped)
-
-        val contentFrame = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
-            ?: playerView.videoSurfaceView ?: playerView
-        val sourceRect = Rect()
-        if (contentFrame.getGlobalVisibleRect(sourceRect) && sourceRect.width() > 0 && sourceRect.height() > 0) {
-            builder.setSourceRectHint(sourceRect)
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setSeamlessResizeEnabled(true)
-        }
-
+        val params = buildPipParams(forAutoEnter = true) ?: return
         isEnteringPip = true
 
         val entered = try {
-            enterPictureInPictureMode(builder.build())
+            enterPictureInPictureMode(params)
         } catch (_: Exception) {
             false
         }
@@ -2129,7 +2273,9 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (::player.isInitialized && player.isPlaying) enterPip()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            if (::player.isInitialized && player.isPlaying && (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !isInPictureInPictureMode)) enterPip()
+        }
     }
 
     private val exoTransportIds = intArrayOf(
@@ -2225,23 +2371,34 @@ class PlayerActivity : ComponentActivity() {
         if (::playerView.isInitialized) fitExoBottomBar()
         updateSpeedLabel()
         hideSystemBars()
+        updatePipParams()
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isEnteringPip = false
-        playerView.useController = !isInPictureInPictureMode
         if (isInPictureInPictureMode) {
             playerView.hideController()
+            playerView.useController = false
             topBar.visibility = View.GONE
             rotateBtn.visibility = View.GONE
             if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
             hintView.visibility = View.GONE
+            dismissResumePrompt()
         } else {
             PlayerOrientation.apply(this)
             hideSystemBars()
             updateRotateBtnPosition()
-            if (::playerView.isInitialized) fitExoBottomBar()
+            if (::playerView.isInitialized) {
+                fitExoBottomBar()
+                playerView.useController = true
+                playerView.hideController()
+            }
+            topBar.visibility = View.GONE
+            rotateBtn.visibility = View.GONE
+            if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
+            hintView.visibility = View.GONE
+            playerView.post { updatePipParams(force = true) }
         }
     }
 
@@ -2256,6 +2413,7 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        AbLoopDialog.dismiss()
         ScreenLock.release(this)
         try { loudnessEnhancer?.release() } catch (_: Throwable) {}
         loudnessEnhancer = null

@@ -35,6 +35,33 @@ class SyncTest {
         assertEquals(1, Repo.store.sources.value.size)
     }
 
+    @Test fun encryptedRoundTrip() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val p = ctx.getSharedPreferences("fanzhou", Context.MODE_PRIVATE)
+        p.edit().putString("sources", "[{\"id\":\"b\",\"name\":\"y\",\"type\":\"115\",\"cookie\":\"secret_cookie\"}]").putInt("seek_step", 20).commit()
+
+        val encJson = ConfigSync.export(password = "pass1234", profile = "张三")
+        val info = ConfigSync.inspect(encJson)
+        assertEquals(true, info.isEncrypted)
+        assertEquals("张三", info.profile)
+
+        // Reset prefs
+        p.edit().clear().putInt("seek_step", 5).commit()
+
+        // Wrong password should fail
+        var failed = false
+        try {
+            ConfigSync.import(encJson, password = "wrongPassword")
+        } catch (e: Exception) {
+            failed = true
+        }
+        assertEquals(true, failed)
+
+        // Correct password should succeed
+        ConfigSync.import(encJson, password = "pass1234")
+        assertEquals(20, p.getInt("seek_step", 0))
+    }
+
     @Test fun cloudRecentAddAndRemove() {
         val s = Repo.store
         val sid = "test_src"

@@ -67,6 +67,11 @@ class Store(context: Context) {
         get() = prefs.getBoolean("auto_next", true)
         set(v) { prefs.edit().putBoolean("auto_next", v).apply() }
 
+    /** 播放缓存加载大小 (MB): 32 ~ 512，默认 64 */
+    var bufferSizeMb: Int
+        get() = prefs.getInt("buffer_size_mb", 64).coerceIn(32, 512)
+        set(v) { prefs.edit().putInt("buffer_size_mb", v.coerceIn(32, 512)).apply() }
+
     /** Manually picked quality label remembered per series/folder ("source:folder" or "jf:source:title" key). */
     fun qualityForSeries(seriesKey: String): String? {
         val s = prefs.getString("quality_series_$seriesKey", null)

@@ -104,6 +104,21 @@
           android:contentDescription="选集"
           android:src="@drawable/ic_episodes"/>
 
+      <!-- AB 片段循环 button -->
+      <TextView android:id="@+id/fz_ab"
+          android:layout_width="48dp"
+          android:layout_height="48dp"
+          android:layout_gravity="center_vertical"
+          android:gravity="center"
+          android:text="AB"
+          android:textColor="#FFFFFFFF"
+          android:textSize="15sp"
+          android:textStyle="bold"
+          android:contentDescription="AB片段循环"
+          android:background="?android:attr/selectableItemBackgroundBorderless"
+          android:clickable="true"
+          android:focusable="true"/>
+
       <ImageButton android:id="@+id/fz_subtitle"
           style="@style/ExoStyledControls.Button.Bottom.CC"
           android:contentDescription="字幕"/>

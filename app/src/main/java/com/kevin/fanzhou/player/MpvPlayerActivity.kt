@@ -95,6 +95,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private lateinit var audio: AudioManager
     private val handler = Handler(Looper.getMainLooper())
     private var isEnteringPip = false
+    private var activeAbSegment: AbSegment? = null
 
     private var queue: MutableList<PlayItem> = mutableListOf()
     private var currentIndex = -1
@@ -232,9 +233,12 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         m.setOptionString("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
         m.setOptionString("ao", "audiotrack,opensles")
         m.setOptionString("tls-verify", "no")
+        val bufMb = Repo.store.bufferSizeMb
+        val maxBytes = bufMb * 1024L * 1024L
+        val backBytes = (maxBytes / 4).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)
         m.setOptionString("cache", "yes")
-        m.setOptionString("demuxer-max-bytes", "${96 * 1024 * 1024}")
-        m.setOptionString("demuxer-max-back-bytes", "${32 * 1024 * 1024}")
+        m.setOptionString("demuxer-max-bytes", "$maxBytes")
+        m.setOptionString("demuxer-max-back-bytes", "$backBytes")
         m.setOptionString("network-timeout", "30")
         m.setOptionString("keep-open", "yes")
         m.setOptionString("input-default-bindings", "no")
@@ -335,6 +339,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private fun playIndex(i: Int) {
         if (i !in queue.indices) return
+        activeAbSegment = null
         updateSpeedLabel()
         if (currentIndex >= 0 && currentIndex != i) saveCurrent(stopped = true)
         currentIndex = i
@@ -624,6 +629,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         applyAspect()
         applyAudioBoost()
         applySubtitleStyle()
+        updatePipParams()
         handler.postDelayed({ checkSmartSubBubble() }, 600)
     }
 
@@ -1015,6 +1021,15 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
     }
 
+    private fun checkAbLoop() {
+        val seg = activeAbSegment ?: return
+        if (!fileLoaded) return
+        val pos = posMs
+        if (pos >= seg.endMs || pos < seg.startMs - 2000L) {
+            seekTo(seg.startMs)
+        }
+    }
+
     private val uiTick = object : Runnable {
         override fun run() {
             if (!scrubbing) {
@@ -1025,8 +1040,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 durView.text = fmt(durMs)
                 updateMediaSessionState()
                 checkAutoSkip()
+                checkAbLoop()
             }
-            handler.postDelayed(this, 500)
+            handler.postDelayed(this, if (activeAbSegment != null) 200 else 500)
         }
     }
 
@@ -1124,6 +1140,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_subtitle).setOnClickListener { v -> showTrackMenu("sub", v); bumpControls() }
         findViewById<View>(R.id.mpv_settings).setOnClickListener { v -> showSettingsMenu(v); bumpControls() }
         findViewById<View>(R.id.mpv_speed)?.setOnClickListener { showSpeedPopup(it); bumpControls() }
+        findViewById<View>(R.id.mpv_ab)?.setOnClickListener { showAbLoopDialog(); bumpControls() }
         updateSpeedLabel()
 
         val consumeAndBump = View.OnClickListener { bumpControls() }
@@ -1191,12 +1208,29 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         })
 
         attachGestures()
+
+        val pipLayoutListener = View.OnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (left != oldLeft || right != oldRight || top != oldTop || bottom != oldBottom) {
+                val w = right - left
+                val oldW = oldRight - oldLeft
+                val isExpanding = (oldW > 0 && w > oldW * 1.5) || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isInPictureInPictureMode)
+                if (isExpanding) {
+                    updatePipParams(force = true)
+                } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !isInPictureInPictureMode) {
+                    updatePipParams(force = false)
+                }
+            }
+        }
+        surface.addOnLayoutChangeListener(pipLayoutListener)
+        findViewById<View>(R.id.mpv_root)?.addOnLayoutChangeListener(pipLayoutListener)
+        updatePipParams()
     }
 
     private fun updatePlayPause() {
         playPause.setImageResource(if (paused) androidx.media3.ui.R.drawable.exo_styled_controls_play else androidx.media3.ui.R.drawable.exo_styled_controls_pause)
         playPause.contentDescription = if (paused) "播放" else "暂停"
         updateMediaSessionState()
+        updatePipParams()
     }
 
     private val hideControlsRunnable = Runnable { hideControls() }
@@ -1249,15 +1283,51 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_episodes)?.visibility =
             if (queue.size <= 1) View.GONE else View.VISIBLE
         findViewById<View>(R.id.mpv_subtitle)?.visibility = if (portrait) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.mpv_ab)?.visibility = View.VISIBLE
+        updateAbButtonState()
         val t = findViewById<TextView>(R.id.mpv_speed) ?: return
         t.visibility = View.VISIBLE
         t.text = fmtSpeed(speed) + "x"
+    }
+
+    private fun showAbLoopDialog() {
+        val p = queue.getOrNull(currentIndex) ?: return
+        val curPos = posMs.coerceAtLeast(0L)
+        val dur = durMs.coerceAtLeast(0L)
+        val root = findViewById<ViewGroup>(R.id.mpv_root) ?: findViewById(android.R.id.content)
+        AbLoopDialog.show(
+            activity = this,
+            root = root,
+            videoKey = p.effectiveResumeKey,
+            currentPosMs = curPos,
+            durationMs = dur,
+            activeSegmentId = activeAbSegment?.id,
+            fmt = { fmt(it) },
+            onStartLoop = { seg ->
+                activeAbSegment = seg
+                seekTo(seg.startMs)
+                updateAbButtonState()
+                showHint("🔁 循环「${seg.name}」")
+            },
+            onStopLoop = {
+                activeAbSegment = null
+                updateAbButtonState()
+                showHint("已退出 AB 循环")
+            }
+        )
+    }
+
+    private fun updateAbButtonState() {
+        val abBtn = findViewById<TextView>(R.id.mpv_ab) ?: return
+        val isLooping = activeAbSegment != null
+        abBtn.setTextColor(if (isLooping) 0xFF42A5F5.toInt() else Color.WHITE)
     }
 
     private fun cycleAspect() {
         aspectMode = (aspectMode + 1) % aspectNames.size
         applyAspect()
         showHint(aspectNames[aspectMode])
+        updatePipParams()
     }
 
     private fun applyAspect() {
@@ -1984,6 +2054,74 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     // ---------------- PiP & lifecycle ----------------
 
+    private fun computePipAspectRatio(): Rational {
+        val w = mpv?.getPropertyInt("video-params/dw") ?: 0
+        val h = mpv?.getPropertyInt("video-params/dh") ?: 0
+        val ratio = if (w > 0 && h > 0) Rational(w, h) else Rational(16, 9)
+        return when {
+            ratio.toFloat() > 2.39f -> Rational(239, 100)
+            ratio.toFloat() < 0.42f -> Rational(42, 100)
+            else -> ratio
+        }
+    }
+
+    private fun computePipSourceRect(): Rect {
+        if (!::surface.isInitialized) return Rect()
+        val sRect = Rect()
+        if (!surface.getGlobalVisibleRect(sRect) || sRect.width() <= 0 || sRect.height() <= 0) {
+            return sRect
+        }
+        if (aspectMode != 0) {
+            return sRect
+        }
+        val w = mpv?.getPropertyInt("video-params/dw") ?: 0
+        val h = mpv?.getPropertyInt("video-params/dh") ?: 0
+        if (w > 0 && h > 0) {
+            val sw = sRect.width()
+            val sh = sRect.height()
+            val videoAspect = w.toFloat() / h
+            val surfaceAspect = sw.toFloat() / sh
+            val (rw, rh) = if (videoAspect > surfaceAspect) {
+                sw to (sw / videoAspect).toInt().coerceAtLeast(1)
+            } else {
+                (sh * videoAspect).toInt().coerceAtLeast(1) to sh
+            }
+            val left = sRect.left + (sw - rw) / 2
+            val top = sRect.top + (sh - rh) / 2
+            return Rect(left, top, left + rw, top + rh)
+        }
+        return sRect
+    }
+
+    private fun buildPipParams(forAutoEnter: Boolean = false): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(computePipAspectRatio())
+
+        val sourceRect = computePipSourceRect()
+        if (sourceRect.width() > 0 && sourceRect.height() > 0) {
+            builder.setSourceRectHint(sourceRect)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setSeamlessResizeEnabled(true)
+            val canAutoEnter = forAutoEnter || (mpv != null && !paused && fileLoaded && !switching && !isEnteringPip && (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !isInPictureInPictureMode))
+            builder.setAutoEnterEnabled(canAutoEnter)
+        }
+        return builder.build()
+    }
+
+    private fun updatePipParams(force: Boolean = false) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode && !force) {
+            return
+        }
+        val params = buildPipParams() ?: return
+        try {
+            setPictureInPictureParams(params)
+        } catch (_: Exception) {}
+    }
+
     private fun enterPip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         if (mpv == null) return
@@ -1994,45 +2132,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         hintView.visibility = View.GONE
         dismissResumePrompt()
 
-        val w = mpv?.getPropertyInt("video-params/dw") ?: 0
-        val h = mpv?.getPropertyInt("video-params/dh") ?: 0
-        val ratio = if (w > 0 && h > 0) Rational(w, h) else Rational(16, 9)
-        val clamped = when {
-            ratio.toFloat() > 2.39f -> Rational(239, 100)
-            ratio.toFloat() < 0.42f -> Rational(42, 100)
-            else -> ratio
-        }
-        val builder = PictureInPictureParams.Builder()
-            .setAspectRatio(clamped)
-
-        val sourceRect = Rect()
-        if (::surface.isInitialized && surface.getGlobalVisibleRect(sourceRect) && sourceRect.width() > 0 && sourceRect.height() > 0) {
-            val sw = sourceRect.width()
-            val sh = sourceRect.height()
-            if (w > 0 && h > 0) {
-                val videoAspect = w.toFloat() / h
-                val surfaceAspect = sw.toFloat() / sh
-                val (rw, rh) = if (videoAspect > surfaceAspect) {
-                    sw to (sw / videoAspect).toInt().coerceAtLeast(1)
-                } else {
-                    (sh * videoAspect).toInt().coerceAtLeast(1) to sh
-                }
-                val left = sourceRect.left + (sw - rw) / 2
-                val top = sourceRect.top + (sh - rh) / 2
-                builder.setSourceRectHint(Rect(left, top, left + rw, top + rh))
-            } else {
-                builder.setSourceRectHint(sourceRect)
-            }
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setSeamlessResizeEnabled(true)
-        }
-
+        val params = buildPipParams(forAutoEnter = true) ?: return
         isEnteringPip = true
 
         val entered = try {
-            enterPictureInPictureMode(builder.build())
+            enterPictureInPictureMode(params)
         } catch (_: Exception) {
             false
         }
@@ -2046,7 +2150,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (mpv != null && !paused && fileLoaded && !switching) enterPip()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            if (mpv != null && !paused && fileLoaded && !switching && (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !isInPictureInPictureMode)) enterPip()
+        }
     }
 
     private fun stretchMpvRow() {
@@ -2064,6 +2170,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         PlayerOrientation.compactButtons(this, window.decorView, mpvTransportIds); stretchMpvRow()
         updateSpeedLabel()
         hideSystemBars()
+        updatePipParams()
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
@@ -2081,6 +2188,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             updateRotateBtnPosition()
             PlayerOrientation.compactButtons(this, window.decorView, mpvTransportIds)
             stretchMpvRow()
+            hideControls()
+            surface.post { updatePipParams(force = true) }
         }
     }
 
@@ -2106,6 +2215,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        AbLoopDialog.dismiss()
         ScreenLock.release(this)
         mediaSession?.isActive = false
         mediaSession?.release()

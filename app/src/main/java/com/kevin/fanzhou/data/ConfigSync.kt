@@ -11,11 +11,19 @@ import kotlinx.serialization.json.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Config backup: export/import a JSON file, and sync the same JSON to a WebDAV folder.
  * Synced: prefs "fanzhou" (sources, logins, preferences, cloud recents) and "positions" (resume points).
  * Not synced: device_id (each device must stay a separate Jellyfin client), TMDB cache, the sync settings themselves.
+ * Security: Supports AES-256-GCM password-based encryption (PBKDF2) to protect cloud credentials.
+ * Multi-user: Supports profile labels to distinguish backups belonging to different users or devices.
  */
 object ConfigSync {
     private const val FORMAT = 1
@@ -69,11 +77,101 @@ object ConfigSync {
     val configured: Boolean get() = davUrl.isNotBlank() && davUser.isNotBlank()
     private val localModified: Long get() = sync.getLong("local_modified", 0)
 
+    /** 用户档案 / 身份标识：用于区分不同使用者的备份（如“个人”、“客厅电视”、“张三”） */
+    var profileName: String
+        get() = sync.getString("profile_name", "默认") ?: "默认"
+        set(v) { sync.edit().putString("profile_name", v.trim()).apply() }
+
+    /** WebDAV 备份加密密码（选填，设置后自动对 WebDAV 备份进行 AES-256 加密） */
+    var davEncryptionPass: String
+        get() = sync.getString("dav_enc_pass", "") ?: ""
+        set(v) { sync.edit().putString("dav_enc_pass", v).apply() }
+
+    // ---- encryption & inspection ----
+    data class BackupInfo(
+        val isEncrypted: Boolean,
+        val profile: String,
+        val device: String,
+        val exportedAt: Long,
+        val modified: Long
+    )
+
+    fun inspect(text: String): BackupInfo {
+        val o = Json.parseToJsonElement(text).jsonObject
+        require(o["app"]?.jsonPrimitive?.contentOrNull == "fanzhou") { "不是泛舟的配置文件" }
+        val isEncrypted = o["encrypted"]?.jsonPrimitive?.booleanOrNull ?: false
+        val profile = o["profile"]?.jsonPrimitive?.contentOrNull?.ifBlank { "默认" } ?: "默认"
+        val device = o["device"]?.jsonPrimitive?.contentOrNull?.ifBlank { "未知设备" } ?: "未知设备"
+        val exportedAt = o["exportedAt"]?.jsonPrimitive?.longOrNull ?: 0L
+        val modified = o["modified"]?.jsonPrimitive?.longOrNull ?: 0L
+        return BackupInfo(isEncrypted, profile, device, exportedAt, modified)
+    }
+
+    fun encrypt(plainText: String, pass: String, profile: String = profileName): String {
+        val random = SecureRandom()
+        val salt = ByteArray(16).also { random.nextBytes(it) }
+        val iv = ByteArray(12).also { random.nextBytes(it) }
+        val keySpec = PBEKeySpec(pass.toCharArray(), salt, 65536, 256)
+        val keyBytes = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(keySpec).encoded
+        val secretKey = SecretKeySpec(keyBytes, "AES")
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        val ciphertext = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+
+        return buildJsonObject {
+            put("app", "fanzhou")
+            put("format", FORMAT)
+            put("encrypted", true)
+            put("cipher", "AES-256-GCM")
+            put("kdf", "PBKDF2WithHmacSHA256")
+            put("iterations", 65536)
+            put("profile", profile)
+            put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
+            put("exportedAt", System.currentTimeMillis())
+            put("modified", localModified.takeIf { it > 0 } ?: System.currentTimeMillis())
+            put("salt", Base64.encodeToString(salt, Base64.NO_WRAP))
+            put("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
+            put("ciphertext", Base64.encodeToString(ciphertext, Base64.NO_WRAP))
+        }.toString()
+    }
+
+    fun decrypt(encryptedJson: String, pass: String): String {
+        val o = Json.parseToJsonElement(encryptedJson).jsonObject
+        require(o["app"]?.jsonPrimitive?.contentOrNull == "fanzhou") { "不是泛舟的配置文件" }
+        require(o["encrypted"]?.jsonPrimitive?.booleanOrNull == true) { "此配置文件未加密" }
+        val salt = Base64.decode(o["salt"]!!.jsonPrimitive.content, Base64.NO_WRAP)
+        val iv = Base64.decode(o["iv"]!!.jsonPrimitive.content, Base64.NO_WRAP)
+        val ciphertext = Base64.decode(o["ciphertext"]!!.jsonPrimitive.content, Base64.NO_WRAP)
+        val iterations = o["iterations"]?.jsonPrimitive?.intOrNull ?: 65536
+
+        val keySpec = PBEKeySpec(pass.toCharArray(), salt, iterations, 256)
+        val keyBytes = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(keySpec).encoded
+        val secretKey = SecretKeySpec(keyBytes, "AES")
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        return try {
+            cipher.doFinal(ciphertext).decodeToString()
+        } catch (_: Exception) {
+            throw IllegalArgumentException("解密失败：密码错误或备份文件已损坏")
+        }
+    }
+
     // ---- snapshot ----
-    fun export(): String {
+    fun export(password: String? = null, profile: String = profileName): String {
+        val plain = exportPlain(profile)
+        return if (!password.isNullOrBlank()) {
+            encrypt(plain, password, profile)
+        } else {
+            plain
+        }
+    }
+
+    private fun exportPlain(profile: String = profileName): String {
         val root = buildJsonObject {
             put("app", "fanzhou")
             put("format", FORMAT)
+            put("encrypted", false)
+            put("profile", profile)
             put("modified", localModified.takeIf { it > 0 } ?: System.currentTimeMillis())
             put("exportedAt", System.currentTimeMillis())
             put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
@@ -108,8 +206,15 @@ object ConfigSync {
     }
 
     /** Replaces local config with [text]. Resume points from this device that the file lacks are kept. */
-    fun import(text: String) {
-        val o = parse(text)
+    fun import(text: String, password: String? = null) {
+        val info = inspect(text)
+        val plain = if (info.isEncrypted) {
+            require(!password.isNullOrBlank()) { "请输入解密密码" }
+            decrypt(text, password)
+        } else {
+            text
+        }
+        val o = parse(plain)
         val prefs = o["prefs"]!!.jsonObject
         applying = true
         try {
@@ -135,6 +240,9 @@ object ConfigSync {
             }
             val m = o["modified"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis()
             sync.edit().putLong("local_modified", m).commit()
+            if (info.profile.isNotBlank() && info.profile != "默认") {
+                profileName = info.profile
+            }
         } finally { applying = false }
         main.post { Repo.store.reloadSources(); onApplied?.invoke() }
     }
@@ -145,7 +253,8 @@ object ConfigSync {
 
     /** Uploads the local config. Blocking; call off the main thread. */
     fun upload() {
-        val body = export().toRequestBody("application/json; charset=utf-8".toMediaType())
+        val content = export(password = davEncryptionPass.takeIf { it.isNotBlank() }, profile = profileName)
+        val body = content.toRequestBody("application/json; charset=utf-8".toMediaType())
         var code = put(body)
         if (code == 404 || code == 409) {
             Repo.http.newCall(Request.Builder().url(davUrl.trimEnd('/') + davDir.trimEnd('/') + "/").header("Authorization", auth())
@@ -173,7 +282,11 @@ object ConfigSync {
     /** Restores from WebDAV. Blocking. Returns false when the server has no backup yet. */
     fun restore(): Boolean {
         val text = download() ?: return false
-        import(text)
+        val info = inspect(text)
+        if (info.isEncrypted && davEncryptionPass.isBlank()) {
+            error("WebDAV 备份已加密，请先填写 WebDAV 加密密码")
+        }
+        import(text, davEncryptionPass.takeIf { it.isNotBlank() })
         sync.edit().putLong("last_sync", System.currentTimeMillis()).putLong("remote_seen", localModified).apply()
         return true
     }
@@ -185,10 +298,14 @@ object ConfigSync {
     fun syncNow(): String {
         val text = download()
         if (text == null) { upload(); return "已上传（服务器上还没有备份）" }
-        val remoteModified = parse(text)["modified"]?.jsonPrimitive?.longOrNull ?: 0
+        val info = inspect(text)
+        if (info.isEncrypted && davEncryptionPass.isBlank()) {
+            error("WebDAV 备份已加密，请先填写 WebDAV 加密密码")
+        }
+        val remoteModified = info.modified
         return when {
             remoteModified > localModified -> {
-                import(text)
+                import(text, davEncryptionPass.takeIf { it.isNotBlank() })
                 sync.edit().putLong("last_sync", System.currentTimeMillis()).putLong("remote_seen", remoteModified).apply()
                 "已从服务器更新配置"
             }

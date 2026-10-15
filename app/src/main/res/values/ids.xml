@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="fz_stretch_tag" type="id" />
+    <item name="fz_ab_dialog_tag" type="id" />
+    <item name="fz_unlock_confirm_card" type="id" />
 </resources>
