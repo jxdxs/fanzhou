@@ -75,8 +75,36 @@ object PlayerCore {
                 duration = if (cf.duration > 0) cf.duration else (old?.duration ?: 0),
                 dirId = finalDirId,
                 dirName = finalDirName,
-                at = System.currentTimeMillis(),
             ),
         )
+    }
+
+    val JF_PRESETS = listOf(
+        Triple("超清 1080P · 20Mbps", 20_000_000, 1920),
+        Triple("超清 1080P · 10Mbps", 10_000_000, 1920),
+        Triple("高清 720P · 4Mbps", 4_000_000, 1280),
+        Triple("标清 480P · 1.5Mbps", 1_500_000, 854),
+        Triple("流畅 360P · 0.7Mbps", 700_000, 640),
+    )
+
+    fun matchQuality(qs: List<Pair<String, com.kevin.fanzhou.cloud.Resolved>>, target: String?): Pair<String, com.kevin.fanzhou.cloud.Resolved>? {
+        if (qs.isEmpty() || target.isNullOrEmpty() || target == "原画") return null
+        val exact = qs.firstOrNull { it.first == target }
+        if (exact != null) return exact
+
+        val res = Regex("(?i)(4K|2K|1080P|720P|540P|480P|360P)").find(target)?.value
+        if (res != null) {
+            val hit = qs.firstOrNull { it.first.contains(res, ignoreCase = true) }
+            if (hit != null) return hit
+        }
+
+        val order = listOf("4K", "2K", "1080P", "720P", "540P", "480P", "360P")
+        val targetIdx = if (res != null) order.indexOfFirst { it.equals(res, ignoreCase = true) } else 2
+        val best = qs.minByOrNull { item ->
+            val p = Regex("(?i)(4K|2K|1080P|720P|540P|480P|360P)").find(item.first)?.value
+            val idx = if (p != null) order.indexOfFirst { it.equals(p, ignoreCase = true) } else 99
+            if (idx >= targetIdx) idx - targetIdx else (100 + (targetIdx - idx))
+        }
+        return best ?: qs.firstOrNull()
     }
 }

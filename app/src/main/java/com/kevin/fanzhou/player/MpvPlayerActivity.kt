@@ -346,26 +346,188 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         hideSmartSubBubble()
         updateMediaSessionMetadata(p)
         updateMediaSessionState()
-        load(p, p.startMs)
         reportStart(p)
-        applyFolderQuality(i)
+
+        if (qualityLabel[i] != null) {
+            load(p, p.startMs)
+            val curLabel = qualityLabel[i]
+            if (!curLabel.isNullOrEmpty() && curLabel != "原画") {
+                preResolveUpcomingMpv(i + 1, curLabel)
+            }
+            return
+        }
+
+        val orig = originals[i] ?: p
+        val remembered = Repo.store.qualityForSeries(orig.seriesKey)
+        if (remembered.isNullOrEmpty() || remembered == "原画") {
+            load(p, p.startMs)
+            return
+        }
+
+        val jfId = orig.jfItemId
+        val sid = orig.sourceId
+        val cf = orig.cloudFile
+
+        if (jfId != null && sid != null) {
+            val client = Repo.jellyfin(sid)
+            val jfMatch = PlayerCore.matchQuality(PlayerCore.JF_PRESETS.map { it.first to Resolved("", emptyMap(), null) }, remembered)
+            val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == jfMatch?.first } ?: PlayerCore.JF_PRESETS.firstOrNull { it.first == remembered }
+            if (client != null && preset != null) {
+                originals.getOrPut(i) { orig }
+                val newItem = orig.copy(
+                    url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third),
+                    headers = emptyMap(),
+                    mime = null
+                )
+                queue[i] = newItem
+                qualityLabel[i] = preset.first
+                folderQualityApplied.add(i)
+                load(newItem, newItem.startMs)
+                showHint("画质：${preset.first}（已记住本剧设置）")
+                preResolveUpcomingMpv(i + 1, remembered)
+                return
+            }
+        }
+
+        if (cf != null && sid != null) {
+            val cached = qualityCache[i]
+            if (!cached.isNullOrEmpty()) {
+                val hit = PlayerCore.matchQuality(cached, remembered)
+                if (hit != null) {
+                    originals.getOrPut(i) { orig }
+                    val newItem = orig.copy(
+                        url = hit.second.url,
+                        headers = hit.second.headers,
+                        mime = hit.second.mime,
+                        cloudFile = cf,
+                        subtitles = orig.subtitles
+                    )
+                    queue[i] = newItem
+                    qualityLabel[i] = hit.first
+                    folderQualityApplied.add(i)
+                    load(newItem, newItem.startMs)
+                    showHint("画质：${hit.first}（已记住本剧设置）")
+                    preResolveUpcomingMpv(i + 1, remembered)
+                    return
+                }
+            }
+
+            loading.visibility = View.VISIBLE
+            lifecycleScope.launch {
+                val qs = runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                if (qs.isNotEmpty()) qualityCache[i] = qs
+                if (currentIndex != i) return@launch
+                val hit = PlayerCore.matchQuality(qs, remembered)
+                val itemToPlay = if (hit != null) {
+                    originals.getOrPut(i) { orig }
+                    val newItem = orig.copy(
+                        url = hit.second.url,
+                        headers = hit.second.headers,
+                        mime = hit.second.mime,
+                        cloudFile = cf,
+                        subtitles = orig.subtitles
+                    )
+                    queue[i] = newItem
+                    qualityLabel[i] = hit.first
+                    folderQualityApplied.add(i)
+                    showHint("画质：${hit.first}（已记住本剧设置）")
+                    newItem
+                } else {
+                    orig
+                }
+                load(itemToPlay, itemToPlay.startMs)
+                preResolveUpcomingMpv(i + 1, remembered)
+            }
+            return
+        }
+
+        load(p, p.startMs)
     }
 
-    /** If the user manually picked a quality in this cloud folder before, start new episodes at it. */
+    /** If the user manually picked a quality in this cloud folder/series before, start new episodes at it. */
     private fun applyFolderQuality(idx: Int) {
         val p = queue.getOrNull(idx) ?: return
-        val cf = p.cloudFile ?: return
-        val key = p.cloudFolderKey ?: return
-        if (qualityLabel[idx] != null || !folderQualityApplied.add(idx)) return
-        val remembered = Repo.store.qualityForFolder(key) ?: return
-        val sid = p.sourceId ?: return
+        val orig = originals[idx] ?: p
+        val key = orig.seriesKey
+        val remembered = Repo.store.qualityForSeries(key) ?: return
+        if (qualityLabel[idx] != null || !folderQualityApplied.add(idx)) {
+            val cur = qualityLabel[idx] ?: remembered
+            if (!cur.isNullOrEmpty() && cur != "原画") {
+                preResolveUpcomingMpv(idx + 1, cur)
+            }
+            return
+        }
+        val cf = orig.cloudFile
+        val jfId = orig.jfItemId
+        val sid = orig.sourceId ?: return
         lifecycleScope.launch {
-            val qs = qualityCache[idx] ?: runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
-                .also { if (it.isNotEmpty()) qualityCache[idx] = it }
-            if (idx != currentIndex) return@launch
-            val hit = qs.firstOrNull { it.first == remembered } ?: return@launch
-            replaceCurrent(p.copy(url = hit.second.url, headers = hit.second.headers, mime = hit.second.mime, cloudFile = cf, subtitles = p.subtitles), hit.first)
-            showHint("画质：${hit.first}（本文件夹已记住）")
+            if (jfId != null) {
+                val client = Repo.jellyfin(sid) ?: return@launch
+                val jfMatch = PlayerCore.matchQuality(PlayerCore.JF_PRESETS.map { it.first to Resolved("", emptyMap(), null) }, remembered)
+                val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == jfMatch?.first } ?: PlayerCore.JF_PRESETS.firstOrNull { it.first == remembered } ?: return@launch
+                if (idx != currentIndex) return@launch
+                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = emptyMap(), mime = null), preset.first)
+                showHint("画质：${preset.first}（已记住本剧设置）")
+                preResolveUpcomingMpv(idx + 1, remembered)
+            } else if (cf != null) {
+                val qs = qualityCache[idx] ?: runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                    .also { if (it.isNotEmpty()) qualityCache[idx] = it }
+                if (idx != currentIndex) return@launch
+                val hit = PlayerCore.matchQuality(qs, remembered) ?: return@launch
+                replaceCurrent(orig.copy(url = hit.second.url, headers = hit.second.headers, mime = hit.second.mime, cloudFile = cf, subtitles = p.subtitles), hit.first)
+                showHint("画质：${hit.first}（已记住本剧设置）")
+                preResolveUpcomingMpv(idx + 1, remembered)
+            }
+        }
+    }
+
+    private fun preResolveUpcomingMpv(fromIndex: Int, preferredLabel: String) {
+        if (preferredLabel.isEmpty() || preferredLabel == "原画") return
+        lifecycleScope.launch(Dispatchers.IO) {
+            val maxIdx = (fromIndex + 5).coerceAtMost(queue.size - 1)
+            for (idx in fromIndex..maxIdx) {
+                if (qualityLabel[idx] != null) continue
+                val item = originals[idx] ?: queue[idx]
+                val jfId = item.jfItemId
+                val sid = item.sourceId
+                if (jfId != null && sid != null) {
+                    val client = Repo.jellyfin(sid) ?: continue
+                    val jfMatch = PlayerCore.matchQuality(PlayerCore.JF_PRESETS.map { it.first to Resolved("", emptyMap(), null) }, preferredLabel)
+                    val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == jfMatch?.first } ?: PlayerCore.JF_PRESETS.firstOrNull { it.first == preferredLabel } ?: continue
+                    val updated = item.copy(
+                        url = client.transcodeUrl(jfId, item.jfMediaSourceId, preset.second, preset.third),
+                        headers = emptyMap(),
+                        mime = null
+                    )
+                    withContext(Dispatchers.Main) {
+                        originals.getOrPut(idx) { item }
+                        queue[idx] = updated
+                        qualityLabel[idx] = preset.first
+                    }
+                } else {
+                    val cf = item.cloudFile ?: continue
+                    if (sid == null) continue
+                    val qs = qualityCache[idx] ?: runCatching { CloudDrive.get(sid)?.qualities(cf) }.getOrNull().orEmpty()
+                    if (qs.isNotEmpty()) {
+                        qualityCache[idx] = qs
+                        val hit = PlayerCore.matchQuality(qs, preferredLabel)
+                        if (hit != null) {
+                            withContext(Dispatchers.Main) {
+                                val updated = item.copy(
+                                    url = hit.second.url,
+                                    headers = hit.second.headers,
+                                    mime = hit.second.mime,
+                                    cloudFile = cf,
+                                    subtitles = item.subtitles
+                                )
+                                originals.getOrPut(idx) { item }
+                                queue[idx] = updated
+                                qualityLabel[idx] = hit.first
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -472,8 +634,13 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (jfId != null && sid != null && jfFallbackTried.add(idx)) {
             val client = Repo.jellyfin(sid)
             if (client != null) {
-                toast("直连播放失败，已切换为服务器转码")
-                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId), headers = client.authHeaders()), "转码 8Mbps")
+                val remembered = Repo.store.qualityForSeries(orig.seriesKey)
+                val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == remembered } ?: PlayerCore.JF_PRESETS[1]
+                val label = preset.first
+                Repo.store.setQualityForSeries(orig.seriesKey, label)
+                toast("直连播放失败，已切换为服务器转码（已记住本剧设置）")
+                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = client.authHeaders()), label)
+                preResolveUpcomingMpv(idx + 1, label)
                 return
             }
         }
@@ -495,15 +662,26 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     .also { if (it.isNotEmpty()) qualityCache[idx] = it }
                 if (idx != currentIndex) return@launch
                 if (qs.isEmpty()) { jfFallbackOrToast(idx, orig); return@launch }
-                val curLabel = qualityLabel[idx] ?: "原画"
-                val curPos = if (curLabel == "原画") -1 else qs.indexOfFirst { it.first == curLabel }
-                val next = cloudLadderStep[idx] ?: (curPos + 1)
-                if (next !in qs.indices) { jfFallbackOrToast(idx, orig); return@launch }
-                cloudLadderStep[idx] = next + 1
-                val (label, r) = qs[next]
+
+                val remembered = Repo.store.qualityForSeries(orig.seriesKey)
+                val matched = if (remembered != null) PlayerCore.matchQuality(qs, remembered) else null
+                val (label, r) = if (matched != null && matched.first != qualityLabel[idx]) {
+                    matched
+                } else {
+                    val curLabel = qualityLabel[idx] ?: "原画"
+                    val curPos = if (curLabel == "原画") -1 else qs.indexOfFirst { it.first == curLabel }
+                    val next = cloudLadderStep[idx] ?: (curPos + 1)
+                    if (next !in qs.indices) { jfFallbackOrToast(idx, orig); return@launch }
+                    cloudLadderStep[idx] = next + 1
+                    qs[next]
+                }
+
                 val subs = queue.getOrNull(idx)?.subtitles ?: orig.subtitles
+                qualityLabel[idx] = label
+                Repo.store.setQualityForSeries(orig.seriesKey, label)
                 replaceCurrent(orig.copy(url = r.url, headers = r.headers, mime = r.mime, cloudFile = cf, subtitles = subs), label)
-                showHint("原播放失败，已自动切换：$label")
+                showHint("原画播放失败，已自动切换：$label（已记住本剧设置）")
+                preResolveUpcomingMpv(idx + 1, label)
             } finally { cloudFallbackBusy = false }
         }
     }
@@ -1400,15 +1578,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         when {
             jfId != null -> {
                 val client = Repo.jellyfin(orig.sourceId ?: return) ?: return
-                val presets = listOf(
-                    Triple("超清 1080P · 20Mbps", 20_000_000, 1920),
-                    Triple("超清 1080P · 10Mbps", 10_000_000, 1920),
-                    Triple("高清 720P · 4Mbps", 4_000_000, 1280),
-                    Triple("标清 480P · 1.5Mbps", 1_500_000, 854),
-                    Triple("流畅 360P · 0.7Mbps", 700_000, 640),
-                )
+                val presets = PlayerCore.JF_PRESETS
                 val opts = listOf<Pair<String, () -> PlayItem>>("原画" to { orig }) + presets.map { (label, br, w) ->
-                    label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap()) }
+                    label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap(), mime = null) }
                 }
                 pickQuality(idx, opts, anchor)
             }
@@ -1439,13 +1611,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         QualityPopup.show(targetAnchor, opts.map { it.first }, checked) { which ->
             val (label, make) = opts[which]
             if (label == cur || idx != currentIndex) return@show
-            // Remember the manual pick for this cloud folder; later episodes start at it.
-            (originals[idx] ?: queue.getOrNull(idx))?.let { o ->
-                val key = o.cloudFolderKey
-                if (key != null && o.cloudFile != null) {
-                    folderQualityApplied.add(idx)
-                    Repo.store.setQualityForFolder(key, if (label == "原画") null else label)
-                }
+            val orig = originals[idx] ?: queue.getOrNull(idx)
+            val key = orig?.seriesKey
+            if (key != null) {
+                folderQualityApplied.add(idx)
+                Repo.store.setQualityForSeries(key, if (label == "原画") null else label)
             }
             cloudLadderStep.remove(idx)
             if (label == "原画") {
@@ -1453,8 +1623,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 queue[idx] = o
                 qualityLabel.remove(idx)
                 load(o, posMs)
-            } else replaceCurrent(make(), label)
-            showHint("画质：$label")
+            } else {
+                replaceCurrent(make(), label)
+                if (key != null) preResolveUpcomingMpv(idx + 1, label)
+            }
+            showHint("画质：$label" + if (label != "原画") "（已记住本剧设置）" else "")
         }
     }
 

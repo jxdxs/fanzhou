@@ -67,12 +67,29 @@ class Store(context: Context) {
         get() = prefs.getBoolean("auto_next", true)
         set(v) { prefs.edit().putBoolean("auto_next", v).apply() }
 
-    /** Manually picked cloud quality label remembered per folder ("source:folder" key). */
-    fun qualityForFolder(key: String): String? = prefs.getString("quality_folder_$key", null)
-    fun setQualityForFolder(key: String, label: String?) {
-        if (label.isNullOrEmpty()) prefs.edit().remove("quality_folder_$key").apply()
-        else prefs.edit().putString("quality_folder_$key", label).apply()
+    /** Manually picked quality label remembered per series/folder ("source:folder" or "jf:source:title" key). */
+    fun qualityForSeries(seriesKey: String): String? {
+        val s = prefs.getString("quality_series_$seriesKey", null)
+        if (s != null) return s
+        val rawKey = seriesKey.removePrefix("cloud:")
+        return prefs.getString("quality_folder_$rawKey", null)
     }
+
+    fun setQualityForSeries(seriesKey: String, label: String?) {
+        val rawKey = seriesKey.removePrefix("cloud:")
+        val e = prefs.edit()
+        if (label.isNullOrEmpty() || label == "原画") {
+            e.remove("quality_series_$seriesKey")
+            e.remove("quality_folder_$rawKey")
+        } else {
+            e.putString("quality_series_$seriesKey", label)
+            e.putString("quality_folder_$rawKey", label)
+        }
+        e.apply()
+    }
+
+    fun qualityForFolder(key: String): String? = qualityForSeries("cloud:$key")
+    fun setQualityForFolder(key: String, label: String?) = setQualityForSeries("cloud:$key", label)
 
     var gridColumnsMin: Int
         get() = prefs.getInt("grid_min", 110)
