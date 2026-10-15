@@ -232,7 +232,30 @@ class Store(context: Context) {
     }
 
     fun position(key: String): Long = posPrefs.getLong(key, 0)
+    fun duration(key: String): Long = posPrefs.getLong("dur_$key", 0)
+    fun isFinished(key: String): Boolean = posPrefs.getBoolean("fin_$key", false)
+
     fun savePosition(key: String, ms: Long) { posPrefs.edit().putLong(key, ms).apply() }
+
+    fun saveProgress(key: String, pos: Long, dur: Long, finished: Boolean = false) {
+        val isFin = finished || (dur > 0 && pos > dur * 0.95)
+        val e = posPrefs.edit()
+        e.putLong(key, if (isFin) 0L else pos)
+        e.putLong("raw_pos_$key", pos)
+        if (dur > 0) e.putLong("dur_$key", dur)
+        e.putBoolean("fin_$key", isFin)
+        e.apply()
+    }
+
+    fun rawPosition(key: String): Long = posPrefs.getLong("raw_pos_$key", posPrefs.getLong(key, 0))
+
+    fun progress(key: String, fileDuration: Long = 0L): Float {
+        if (isFinished(key)) return 1.0f
+        val pos = position(key)
+        if (pos <= 0) return 0f
+        val dur = if (fileDuration > 0) fileDuration else duration(key)
+        return if (dur > 0) (pos.toFloat() / dur).coerceIn(0.02f, 1f) else 0.05f
+    }
 
     // ---- online subtitle providers (user's own credentials) ----
     var assrtToken: String

@@ -55,6 +55,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.extractor.metadata.id3.ChapterFrame
 import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import androidx.media3.ui.DefaultTimeBar
+import androidx.media3.ui.TimeBar
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -87,6 +88,7 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var titleView: TextView
     private lateinit var hintView: TextView
     private lateinit var rotateBtn: ImageButton
+    private lateinit var lockBtn: ImageButton
     private lateinit var audio: AudioManager
     private val handler = Handler(Looper.getMainLooper())
     private var isEnteringPip = false
@@ -126,6 +128,7 @@ class PlayerActivity : ComponentActivity() {
     /** True when the user explicitly chose ExoPlayer for this video (no automatic switch to MPV). */
     private var coreForced = false
     private var switchedToMpv = false
+    private var isHandoff = false
     private val autoMpv get() = !coreForced && Repo.store.playerCore == com.kevin.fanzhou.data.CORE_AUTO && PlayerCore.mpvAvailable
 
     private val pickSubLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -189,7 +192,7 @@ class PlayerActivity : ComponentActivity() {
         reportStopCurrent()
         PlayQueue.set(queueForHandoff(pos), currentIndex)
         reason?.let { toast("$it，已切换到 MPV 内核") }
-        PlayerCore.launch(this, mpv = true, forced = forced)
+        PlayerCore.launch(this, mpv = true, forced = forced, handoff = true)
         finish()
         return true
     }
@@ -201,6 +204,7 @@ class PlayerActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
         coreForced = intent?.getBooleanExtra(PlayerCore.EXTRA_FORCED, false) == true
+        isHandoff = intent?.getBooleanExtra(PlayerCore.EXTRA_HANDOFF, false) == true
         if (!coreForced && intent?.data != null && Repo.store.playerCore == com.kevin.fanzhou.data.CORE_MPV && PlayerCore.mpvAvailable) {
             // Opened from another app while MPV is the chosen core.
             loadQueueFromIntent(intent)
@@ -218,6 +222,7 @@ class PlayerActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         coreForced = intent.getBooleanExtra(PlayerCore.EXTRA_FORCED, false)
+        isHandoff = intent.getBooleanExtra(PlayerCore.EXTRA_HANDOFF, false)
         switchedToMpv = false
         transcodedIds.clear(); originals.clear(); qualityLabel.clear()
         qualityCache.clear(); folderQualityApplied.clear(); savedSubAttached.clear(); cloudLadderStep.clear()
@@ -269,11 +274,18 @@ class PlayerActivity : ComponentActivity() {
             setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { vis ->
                 topBar.visibility = vis
                 rotateBtn.visibility = vis
+                lockBtn.visibility = vis
                 if (vis == View.VISIBLE) updateSpeedLabel()
                 if (vis != View.VISIBLE) hideSystemBars()
             })
         }
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+
+        playerView.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.addListener(object : TimeBar.OnScrubListener {
+            override fun onScrubStart(timeBar: TimeBar, position: Long) { dismissResumePrompt() }
+            override fun onScrubMove(timeBar: TimeBar, position: Long) {}
+            override fun onScrubStop(timeBar: TimeBar, position: Long, canceled: Boolean) {}
+        })
 
         rotateBtn = ImageButton(this).apply {
             setImageResource(R.drawable.ic_rotate)
@@ -293,6 +305,21 @@ class PlayerActivity : ComponentActivity() {
         root.addView(rotateBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.START or Gravity.BOTTOM).apply {
             marginStart = dp(16)
             this.bottomMargin = bottomMargin
+        })
+
+        lockBtn = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_lock_open)
+            contentDescription = "锁定屏幕"
+            setBackgroundResource(R.drawable.rotate_fab_bg)
+            setColorFilter(Color.WHITE)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setOnClickListener {
+                lockScreen()
+            }
+        }
+        root.addView(lockBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.CENTER_VERTICAL).apply {
+            marginEnd = dp(16)
         })
 
         topBar = LinearLayout(this).apply {
@@ -389,6 +416,8 @@ class PlayerActivity : ComponentActivity() {
         bubbleLp.bottomMargin = dp(84)
         root.addView(subBubbleView, bubbleLp)
 
+        buildResumePromptView(root)
+
         setContentView(root)
         attachGestures()
     }
@@ -416,6 +445,13 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun isTouchInControlArea(rawX: Int, rawY: Int): Boolean {
+        // Resume prompt touches take precedence
+        val prompt = resumePromptView
+        if (prompt != null && prompt.visibility == View.VISIBLE) {
+            val rect = Rect()
+            prompt.getGlobalVisibleRect(rect)
+            if (rect.contains(rawX, rawY)) return true
+        }
         if (!playerView.isControllerFullyVisible) return false
         // 1. Top bar
         if (::topBar.isInitialized && topBar.visibility == View.VISIBLE) {
@@ -427,6 +463,12 @@ class PlayerActivity : ComponentActivity() {
         if (::rotateBtn.isInitialized && rotateBtn.visibility == View.VISIBLE) {
             val rect = Rect()
             rotateBtn.getGlobalVisibleRect(rect)
+            if (rect.contains(rawX, rawY)) return true
+        }
+        // 2b. Lock button
+        if (::lockBtn.isInitialized && lockBtn.visibility == View.VISIBLE) {
+            val rect = Rect()
+            lockBtn.getGlobalVisibleRect(rect)
             if (rect.contains(rawX, rawY)) return true
         }
         // 3. Subtitle bubble
@@ -668,6 +710,11 @@ class PlayerActivity : ComponentActivity() {
         ensureSavedSubsAttached()
         val start = PlayQueue.index.coerceIn(0, queue.size - 1)
         val startItem = queue[start]
+        val savedPos = startItem.startMs
+        val isHandoffPlayback = isHandoff
+        isHandoff = false
+        val initialSeek = if (isHandoffPlayback) savedPos else 0L
+
         val remembered = Repo.store.qualityForSeries(startItem.seriesKey)
         if (!remembered.isNullOrEmpty() && remembered != "原画") {
             val jfId = startItem.jfItemId
@@ -684,15 +731,19 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         val headers = queue.firstOrNull()?.headers ?: emptyMap()
-        player.setMediaSources(queue.mapIndexed { i, p -> mediaSourceFactory(p.headers.ifEmpty { headers }).createMediaSource(toMediaItem(p, i)) }, start, queue[start].startMs)
+        player.setMediaSources(queue.mapIndexed { i, p -> mediaSourceFactory(p.headers.ifEmpty { headers }).createMediaSource(toMediaItem(p, i)) }, start, initialSeek)
         player.playbackParameters = PlaybackParameters(Repo.store.defaultSpeed)
         player.pauseAtEndOfMediaItems = !Repo.store.autoPlayNext
         player.prepare()
         player.play()
         currentIndex = start
-        val startMs = queue[start].startMs
-        skipController.onIndexChanged(start, startMs)
+        skipController.onIndexChanged(start, initialSeek)
         onItemStarted()
+        if (!isHandoffPlayback && savedPos > 3000L) {
+            showResumePrompt(savedPos)
+        } else {
+            dismissResumePrompt()
+        }
         if (!remembered.isNullOrEmpty() && remembered != "原画") {
             preResolveUpcomingQualities(start + 1, remembered)
         }
@@ -713,7 +764,7 @@ class PlayerActivity : ComponentActivity() {
     private fun saveProgress(index: Int, posMs: Long, durMs: Long, stopped: Boolean) {
         val p = queue.getOrNull(index) ?: return
         val finished = durMs > 0 && posMs > durMs * 0.95
-        p.resumeKey?.let { Repo.store.savePosition(it, if (finished) 0 else posMs) }
+        p.resumeKey?.let { Repo.store.saveProgress(it, posMs, durMs, finished) }
         val id = p.jfItemId ?: return
         val sid = p.sourceId ?: return
         val client = Repo.jellyfin(sid) ?: return
@@ -787,6 +838,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun checkAutoSkip() {
         if (!::player.isInitialized || !player.isPlaying || currentIndex < 0 || currentIndex !in queue.indices) return
+        if (resumePromptView?.visibility == View.VISIBLE) return
         val pos = player.currentPosition
         val dur = player.duration
         if (dur <= 0 || dur == C.TIME_UNSET) return
@@ -799,7 +851,7 @@ class PlayerActivity : ComponentActivity() {
             seriesKey = p?.seriesKey,
             onSeek = { player.seekTo(it) },
             onNextEpisode = {
-                player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                player.seekTo(currentIndex + 1, 0L)
                 player.play()
             },
             showHint = { showHint(it) },
@@ -820,6 +872,121 @@ class PlayerActivity : ComponentActivity() {
             onChanged = { applyAudioBoost() },
             showHint = { showHint(it) }
         )
+    }
+
+    private var resumePromptView: View? = null
+    private var resumePromptText: TextView? = null
+    private var resumeCountdown: Int = 10
+    private var resumeTargetPos: Long = 0L
+    private val resumeCountdownRunnable = object : Runnable {
+        override fun run() {
+            resumeCountdown--
+            if (resumeCountdown <= 0) {
+                dismissResumePrompt()
+            } else {
+                resumePromptText?.text = "上次播放至 ${fmt(resumeTargetPos)} (${resumeCountdown}s)"
+                handler.postDelayed(this, 1000)
+            }
+        }
+    }
+
+    private fun dismissResumePrompt() {
+        handler.removeCallbacks(resumeCountdownRunnable)
+        resumePromptView?.let { prompt ->
+            if (prompt.visibility == View.VISIBLE) {
+                prompt.animate().alpha(0f).setDuration(250).withEndAction {
+                    prompt.visibility = View.GONE
+                }
+            }
+        }
+    }
+
+    private fun showResumePrompt(savedPos: Long) {
+        if (savedPos <= 3000L) return
+        val prompt = resumePromptView ?: return
+        handler.removeCallbacks(resumeCountdownRunnable)
+        resumeTargetPos = savedPos
+        resumeCountdown = 10
+        resumePromptText?.text = "上次播放至 ${fmt(savedPos)} (10s)"
+        prompt.alpha = 0f
+        prompt.visibility = View.VISIBLE
+        prompt.animate().alpha(1f).setDuration(250).start()
+        handler.postDelayed(resumeCountdownRunnable, 1000)
+    }
+
+    private fun buildResumePromptView(root: FrameLayout) {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xE6212121.toInt())
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), 0x55FFFFFF.toInt())
+            }
+            setPadding(dp(14), dp(6), dp(10), dp(6))
+            elevation = dp(6).toFloat()
+            visibility = View.GONE
+        }
+
+        val tv = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        resumePromptText = tv
+        container.addView(tv)
+
+        val btnContinue = TextView(this).apply {
+            text = "继续"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(0xFF3D7BE6.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            val lp = LinearLayout.LayoutParams(-2, -2).apply {
+                marginStart = dp(10)
+            }
+            layoutParams = lp
+            setOnClickListener {
+                if (::player.isInitialized) {
+                    player.seekTo(resumeTargetPos)
+                    showHint("已跳转至上次播放位置")
+                }
+                dismissResumePrompt()
+            }
+        }
+        container.addView(btnContinue)
+
+        val btnCancel = TextView(this).apply {
+            text = "取消"
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 12f
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(0x33FFFFFF.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            val lp = LinearLayout.LayoutParams(-2, -2).apply {
+                marginStart = dp(6)
+            }
+            layoutParams = lp
+            setOnClickListener {
+                dismissResumePrompt()
+            }
+        }
+        container.addView(btnCancel)
+
+        resumePromptView = container
+        val promptLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply {
+            marginStart = dp(16)
+            bottomMargin = dp(84)
+        }
+        root.addView(container, promptLp)
     }
 
     private var subBubbleView: View? = null
@@ -1015,12 +1182,12 @@ class PlayerActivity : ComponentActivity() {
         items += IconMenu.Item(R.drawable.ic_sub_delay, "字幕延迟") { showSubDelayMenu() }
         if (currentIndex > 0) {
             items += IconMenu.Item(R.drawable.ic_prev, "上一集") {
-                player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs); player.play()
+                player.seekTo(currentIndex - 1, 0L); player.play()
             }
         }
         if (currentIndex + 1 < queue.size) {
             items += IconMenu.Item(R.drawable.ic_next, "下一集") {
-                player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs); player.play()
+                player.seekTo(currentIndex + 1, 0L); player.play()
             }
         }
         if (skipController.chapters.isNotEmpty()) {
@@ -1075,7 +1242,7 @@ class PlayerActivity : ComponentActivity() {
             seriesKey = p?.seriesKey,
             hasNext = currentIndex + 1 < queue.size,
             onNext = {
-                player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                player.seekTo(currentIndex + 1, 0L)
                 player.play()
             },
             onSeekEnd = { player.seekTo(it) },
@@ -1084,13 +1251,17 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 
-    /** 防误触：藏起控制条与顶栏，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */
+    /** 防误触锁定：藏起控制条与顶栏，全屏防误触锁定。 */
     private fun lockScreen() {
         playerView.hideController()
         playerView.controllerAutoShow = false
         topBar.visibility = View.GONE
         rotateBtn.visibility = View.GONE
-        ScreenLock.lock(this) { playerView.controllerAutoShow = true }
+        if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
+        ScreenLock.lock(this) {
+            playerView.controllerAutoShow = true
+            playerView.showController()
+        }
     }
 
     /** Subtitle menu: compact popup above the button (在线搜索 + 关闭 + embedded/external tracks). */
@@ -1604,13 +1775,28 @@ class PlayerActivity : ComponentActivity() {
             if (currentIndex >= 0) saveProgress(currentIndex, lastDur, lastDur, stopped = true)
             currentIndex = newIndex
             PlayQueue.index = newIndex
-            val start = queue[newIndex].startMs
-            if (start > 0 && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) player.seekTo(start)
-            skipController.onIndexChanged(newIndex, start)
+            val savedPos = queue[newIndex].startMs
+            skipController.onIndexChanged(newIndex, 0L)
             updateChapterMarkers()
             smartSubPromptedIndex = -1
             hideSmartSubBubble()
+            dismissResumePrompt()
+            if (savedPos > 3000L && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                showResumePrompt(savedPos)
+            }
             onItemStarted()
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                if (kotlin.math.abs(newPosition.positionMs - resumeTargetPos) > 1000L) {
+                    dismissResumePrompt()
+                }
+            }
         }
 
         override fun onMetadata(metadata: Metadata) {
@@ -1898,6 +2084,7 @@ class PlayerActivity : ComponentActivity() {
         playerView.useController = false
         topBar.visibility = View.GONE
         rotateBtn.visibility = View.GONE
+        if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
         hintView.visibility = View.GONE
 
         val fmt = player.videoFormat
@@ -1936,6 +2123,7 @@ class PlayerActivity : ComponentActivity() {
             playerView.useController = true
             topBar.visibility = View.VISIBLE
             rotateBtn.visibility = View.VISIBLE
+            if (::lockBtn.isInitialized) lockBtn.visibility = View.VISIBLE
         }
     }
 
@@ -2047,6 +2235,7 @@ class PlayerActivity : ComponentActivity() {
             playerView.hideController()
             topBar.visibility = View.GONE
             rotateBtn.visibility = View.GONE
+            if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
             hintView.visibility = View.GONE
         } else {
             PlayerOrientation.apply(this)
@@ -2098,12 +2287,14 @@ class PlayerActivity : ComponentActivity() {
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
                 player.seekTo(player.currentPosition + step)
                 showHint("⏩ ${Repo.store.seekStepSec}秒")
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
                 player.seekTo(max(0, player.currentPosition - step))
                 showHint("⏪ ${Repo.store.seekStepSec}秒")
@@ -2111,14 +2302,14 @@ class PlayerActivity : ComponentActivity() {
             }
             KeyEvent.KEYCODE_MEDIA_NEXT -> {
                 if (currentIndex + 1 < queue.size) {
-                    player.seekTo(currentIndex + 1, queue[currentIndex + 1].startMs)
+                    player.seekTo(currentIndex + 1, 0L)
                     player.play()
                 }
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                 if (currentIndex > 0) {
-                    player.seekTo(currentIndex - 1, queue[currentIndex - 1].startMs)
+                    player.seekTo(currentIndex - 1, 0L)
                     player.play()
                 }
                 return true
@@ -2133,12 +2324,14 @@ class PlayerActivity : ComponentActivity() {
                 return true
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
+                dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
                 player.seekTo(max(0, player.currentPosition - step))
                 showHint("⏪ ${Repo.store.seekStepSec}秒")
                 return true
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
                 player.seekTo(player.currentPosition + step)
                 showHint("⏩ ${Repo.store.seekStepSec}秒")

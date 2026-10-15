@@ -71,7 +71,9 @@ import com.kevin.fanzhou.data.Tmdb
 import com.kevin.fanzhou.data.WebDavClient
 import com.kevin.fanzhou.player.PlayerCore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val VIEW_LIST = "list"
 private const val VIEW_GRID = "grid"
@@ -164,10 +166,21 @@ private fun ThumbWithProgress(
     iconSize: Int = 28,
     sid: String? = null,
 ) {
+    val store = Repo.store
+    val key = remember(sid, f.id) { if (sid != null) posKey(sid, f.id) else null }
+    val progress = remember(key, f.duration, pos) {
+        if (key != null && f.isVideo) store.progress(key, f.duration) else 0f
+    }
+    val isFin = remember(key) {
+        if (key != null && f.isVideo) store.isFinished(key) else false
+    }
+    val dur = if (f.duration > 0) f.duration else (if (key != null) store.duration(key) else 0L)
+
     Box(modifier.aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp))) {
         CloudThumb(f, headers, Modifier.fillMaxSize(), iconSize, sid = sid)
-        if (f.duration > 0) DurationTag(fmtMs(f.duration), Modifier.align(Alignment.BottomEnd))
-        if (pos > 0 && f.duration > 0) ProgressStrip((pos.toFloat() / f.duration).coerceIn(0.02f, 1f), Modifier.align(Alignment.BottomCenter))
+        if (dur > 0) DurationTag(fmtMs(dur), Modifier.align(Alignment.BottomEnd))
+        if (isFin) CornerBadge("✓", Modifier.align(Alignment.TopEnd))
+        if (progress > 0.01f) ProgressStrip(progress, Modifier.align(Alignment.BottomCenter))
     }
 }
 
@@ -232,6 +245,7 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
     var deleteFile by remember { mutableStateOf<CloudFile?>(null) }
     var deleteRecent by remember { mutableStateOf<CloudRecent?>(null) }
     var deleteFav by remember { mutableStateOf<CloudFav?>(null) }
+    var qualityFolderTarget by remember { mutableStateOf<CloudFile?>(null) }
     val opScope = rememberCoroutineScope()
     fun fileOp(done: String, op: suspend () -> Unit) {
         opScope.launch {
@@ -386,12 +400,33 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                             focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
                             focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
                         ),
-                    ) else Text(title ?: drive.source.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    ) else Text(
+                        title ?: drive.source.name,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = if (!isRoot) Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = { qualityFolderTarget = CloudFile(id = dir, name = title ?: "当前文件夹", isDir = true) }
+                        ) else Modifier
+                    )
                 },
                 navigationIcon = { BackAndHome(nav, showHome = !isRoot) },
                 actions = {
                     if (searching) IconButton(onClick = { searching = false; query = "" }) { Icon(Icons.Filled.Close, "关闭搜索") }
                     else IconButton(onClick = { searching = true }) { Icon(Icons.Filled.Search, "搜索") }
+                    if (!isRoot) {
+                        val currentDirQ = store.qualityForFolder("$sid:$dir")
+                        val hasCustomQ = !currentDirQ.isNullOrEmpty() && currentDirQ != "原画"
+                        IconButton(onClick = {
+                            qualityFolderTarget = CloudFile(id = dir, name = title ?: "当前文件夹", isDir = true)
+                        }) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_decoder),
+                                contentDescription = "设置当前文件夹画质",
+                                tint = if (hasCustomQ) Accent else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                     Box {
                         IconButton(onClick = { sortMenu = true }) { Icon(painterResource(R.drawable.ic_sort), "排序") }
                         DropdownMenu(sortMenu, { sortMenu = false }) {
@@ -490,15 +525,21 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                     item(key = "_count", span = { GridItemSpan(maxLineSpan) }) { CountLine(shown, Modifier.padding(horizontal = 4.dp)) }
                     items(shown.size, key = { shown[it].id }) { i ->
                         val f = shown[i]
-                        val pos = remember(f.id, resumeTick) { if (f.isVideo) store.position(posKey(sid, f.id)) else 0L }
+                        val key = remember(sid, f.id) { posKey(sid, f.id) }
+                        val pos = remember(f.id, resumeTick) { if (f.isVideo) store.position(key) else 0L }
+                        val isFin = remember(key, resumeTick) { if (f.isVideo) store.isFinished(key) else false }
                         Column(
                             Modifier.alpha(if (f.isDir || f.isVideo) 1f else 0.45f)
                                 .combinedClickable(onClick = { open(f) }, onLongClick = { sheetFile = f })
                         ) {
                             ThumbWithProgress(f, headers, pos, Modifier.fillMaxWidth(), 36, sid = sid)
                             Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
-                            val meta = metaLine(f) + if (pos > 0 && f.duration <= 0) " · 看到 ${fmtMs(pos)}" else ""
-                            Text(meta.trim(' ', '·'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = TextDim)
+                            val meta = metaLine(f) + when {
+                                isFin -> " · 已看完"
+                                pos > 0 -> " · 看到 ${fmtMs(pos)}"
+                                else -> ""
+                            }
+                            Text(meta.trim(' ', '·'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = if (isFin) Accent else TextDim)
                         }
                     }
                 }
@@ -512,14 +553,18 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                         val f = shown[i]
                         val localThumb = remember(sid, f.id) { if (f.isVideo) VideoThumbnails.getCached(context, sid, f.id) else null }
                         val poster by produceState<String?>(null, f.id) { value = if (f.isDir || f.isVideo) Tmdb.poster(f.name) else null }
-                        val pos = remember(f.id, resumeTick) { if (f.isVideo) store.position(posKey(sid, f.id)) else 0L }
+                        val key = remember(sid, f.id) { posKey(sid, f.id) }
+                        val pos = remember(f.id, resumeTick) { if (f.isVideo) store.position(key) else 0L }
+                        val progress = remember(key, f.duration, resumeTick) { if (f.isVideo) store.progress(key, f.duration) else 0f }
+                        val isFin = remember(key, resumeTick) { if (f.isVideo) store.isFinished(key) else false }
                         PosterCard(
                             title = if (f.isDir || !f.isVideo) f.name else Tmdb.guess(f.name).title,
                             subtitle = if (f.isDir) "文件夹" else sizeText(f.size),
                             imageUrl = poster ?: localThumb?.absolutePath ?: f.thumb,
                             modifier = Modifier.alpha(if (f.isDir || f.isVideo) 1f else 0.45f),
-                            progress = if (pos > 0 && f.duration > 0) (pos.toFloat() / f.duration) else 0f,
-                            badge = if (pos > 0) "续" else null,
+                            progress = progress,
+                            played = isFin,
+                            badge = if (isFin) null else if (pos > 0) "续" else null,
                             onLongClick = { sheetFile = f },
                         ) { open(f) }
                     }
@@ -533,6 +578,8 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
             f = f,
             headers = headers,
             sid = sid,
+            currentDir = dir,
+            currentDirTitle = title,
             store = store,
             onDismiss = { sheetFile = null },
             onOpen = { open(f) },
@@ -541,6 +588,18 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
             onRename = { renameFile = f },
             onDelete = { deleteFile = f },
             onInfo = { infoFile = f },
+            onSetFolderQuality = { target -> qualityFolderTarget = target },
+        )
+    }
+
+    qualityFolderTarget?.let { target ->
+        FolderQualityDialog(
+            folder = target,
+            sid = sid,
+            drive = drive,
+            sampleVideo = if (target.id == dir) videos.firstOrNull() else null,
+            store = store,
+            onDismiss = { qualityFolderTarget = null },
         )
     }
 
@@ -665,6 +724,8 @@ private fun CloudItemMenuDialog(
     f: CloudFile,
     headers: Map<String, String>,
     sid: String,
+    currentDir: String?,
+    currentDirTitle: String?,
     store: com.kevin.fanzhou.data.Store,
     onDismiss: () -> Unit,
     onOpen: () -> Unit,
@@ -673,6 +734,7 @@ private fun CloudItemMenuDialog(
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onInfo: () -> Unit,
+    onSetFolderQuality: (CloudFile) -> Unit,
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -727,13 +789,27 @@ private fun CloudItemMenuDialog(
                             .widthIn(min = 160.dp)
                             .padding(vertical = 4.dp),
                     ) {
-                        if (f.isDir) SheetRow(null, R.drawable.ic_folder, "打开") { onDismiss(); onOpen() }
+                        if (f.isDir) {
+                            SheetRow(null, R.drawable.ic_folder, "打开") { onDismiss(); onOpen() }
+                            val currentQ = store.qualityForFolder("$sid:${f.id}")
+                            val qDesc = if (currentQ.isNullOrEmpty()) "原画" else currentQ
+                            SheetRow(null, R.drawable.ic_decoder, "文件夹画质（当前：$qDesc）") {
+                                onDismiss()
+                                onSetFolderQuality(f)
+                            }
+                        }
                         if (f.isVideo) {
                             SheetRow(Icons.Filled.PlayArrow, null, if (pos > 0) "继续播放（${fmtMs(pos)}）" else "播放") {
                                 onDismiss(); onPlay(false, false)
                             }
                             SheetRow(null, R.drawable.ic_core, "用 MPV 播放") { onDismiss(); onPlay(true, false) }
                             SheetRow(null, R.drawable.ic_replay, "从头播放") { onDismiss(); onPlay(false, true) }
+                            val currentDirQ = store.qualityForFolder("$sid:$currentDir")
+                            val qDesc = if (currentDirQ.isNullOrEmpty()) "原画" else currentDirQ
+                            SheetRow(null, R.drawable.ic_decoder, "所在目录画质（当前：$qDesc）") {
+                                onDismiss()
+                                onSetFolderQuality(CloudFile(id = currentDir ?: "", name = currentDirTitle ?: "当前文件夹", isDir = true))
+                            }
                         }
                         if (f.isDir || f.isVideo) {
                             val favved = store.isCloudFav(sid, f.id)
@@ -785,6 +861,120 @@ private fun CloudItemMenuDialog(
 }
 
 @Composable
+private fun FolderQualityDialog(
+    folder: CloudFile,
+    sid: String,
+    drive: CloudDrive,
+    sampleVideo: CloudFile?,
+    store: com.kevin.fanzhou.data.Store,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val folderKey = "$sid:${folder.id}"
+    val currentQuality = remember(folder.id) { store.qualityForFolder(folderKey) } ?: "原画"
+
+    var detectedQualities by remember { mutableStateOf<List<String>>(emptyList()) }
+    var loadingQualities by remember { mutableStateOf(false) }
+
+    LaunchedEffect(folder.id, sampleVideo?.id) {
+        if (sampleVideo != null) {
+            loadingQualities = true
+            val qs = withContext(Dispatchers.IO) {
+                runCatching { drive.qualities(sampleVideo) }.getOrNull().orEmpty()
+            }
+            if (qs.isNotEmpty()) {
+                detectedQualities = qs.map { it.first }
+            }
+            loadingQualities = false
+        }
+    }
+
+    val defaultOptions = listOf("原画", "4K 超高清", "2K 极清", "超清 1080P", "高清 720P", "标清 480P", "流畅 360P")
+    val allOptions = remember(detectedQualities) {
+        if (detectedQualities.isNotEmpty()) {
+            listOf("原画") + detectedQualities.filter { it != "原画" }
+        } else {
+            defaultOptions
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("设置文件夹画质", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        },
+        text = {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                Text(
+                    "文件夹：「${folder.name}」",
+                    fontSize = 13.sp,
+                    color = Accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "设置后，该文件夹下所有视频将默认以该画质起播（原画无法播放时自动按此画质播放，杜绝卡死）。",
+                    fontSize = 12.sp,
+                    color = TextDim,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                )
+
+                if (loadingQualities) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("正在探测该网盘支持的画质档位…", fontSize = 12.sp, color = TextDim)
+                    }
+                }
+
+                allOptions.forEach { opt ->
+                    val isChecked = (opt == "原画" && (currentQuality == "原画" || currentQuality.isEmpty())) || opt == currentQuality
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                val chosen = if (opt == "原画") null else opt
+                                store.setQualityForFolder(folderKey, chosen)
+                                store.setQualityForSeries("cloud:$folderKey", chosen)
+                                android.widget.Toast.makeText(
+                                    context,
+                                    if (chosen == null) "已恢复「${folder.name}」为默认原画" else "已设置「${folder.name}」全部视频画质为：$opt",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                onDismiss()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = isChecked,
+                            onClick = null,
+                            colors = RadioButtonDefaults.colors(selectedColor = Accent)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            opt,
+                            fontSize = 14.sp,
+                            fontWeight = if (isChecked) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isChecked) Accent else Color.White
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+@Composable
 private fun Breadcrumbs(crumbs: List<String>, onPick: (Int) -> Unit) {
     val scroll = rememberScrollState()
     LaunchedEffect(crumbs.size) { scroll.scrollTo(scroll.maxValue) }
@@ -823,6 +1013,9 @@ private fun CountLine(shown: List<CloudFile>, modifier: Modifier = Modifier) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileRow(f: CloudFile, headers: Map<String, String>, pos: Long, sid: String, onClick: () -> Unit, onLong: () -> Unit) {
+    val store = Repo.store
+    val key = remember(sid, f.id) { posKey(sid, f.id) }
+    val isFin = remember(key) { if (f.isVideo) store.isFinished(key) else false }
     val dim = !(f.isDir || f.isVideo)
     Row(
         Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLong)
@@ -840,9 +1033,15 @@ private fun FileRow(f: CloudFile, headers: Map<String, String>, pos: Long, sid: 
             val meta = metaLine(f)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (meta.isNotEmpty()) Text(meta, fontSize = 11.sp, color = TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                if (pos > 0 && f.duration <= 0) Text(
-                    (if (meta.isNotEmpty()) " · " else "") + "看到 ${fmtMs(pos)}", fontSize = 11.sp, color = Accent, maxLines = 1,
-                )
+                if (isFin) {
+                    Text(
+                        (if (meta.isNotEmpty()) " · " else "") + "已看完", fontSize = 11.sp, color = Accent, maxLines = 1,
+                    )
+                } else if (pos > 0) {
+                    Text(
+                        (if (meta.isNotEmpty()) " · " else "") + "看到 ${fmtMs(pos)}", fontSize = 11.sp, color = Accent, maxLines = 1,
+                    )
+                }
             }
         }
         if (f.isDir) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = TextDim)

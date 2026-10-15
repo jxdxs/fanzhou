@@ -18,6 +18,7 @@ object PlayerCore {
 
     /** Set when the user explicitly picked this core for the video: no automatic core switching. */
     const val EXTRA_FORCED = "core_forced"
+    const val EXTRA_HANDOFF = "core_handoff"
 
     fun extOf(p: PlayItem): String {
         p.container?.takeIf { it.isNotEmpty() }?.let { return it.lowercase() }
@@ -46,9 +47,10 @@ object PlayerCore {
         launch(context, mpv, forced = false)
     }
 
-    fun launch(context: Context, mpv: Boolean, forced: Boolean) {
+    fun launch(context: Context, mpv: Boolean, forced: Boolean, handoff: Boolean = false) {
         val i = Intent(context, if (mpv) MpvPlayerActivity::class.java else PlayerActivity::class.java)
             .putExtra(EXTRA_FORCED, forced)
+            .putExtra(EXTRA_HANDOFF, handoff)
         if (context !is Activity) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(i)
     }

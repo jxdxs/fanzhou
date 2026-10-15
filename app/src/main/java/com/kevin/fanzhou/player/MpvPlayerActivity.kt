@@ -90,6 +90,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private lateinit var durView: TextView
     private lateinit var playPause: ImageButton
     private lateinit var rotateBtn: ImageButton
+    private lateinit var lockBtn: ImageButton
     private lateinit var touch: View
     private lateinit var audio: AudioManager
     private val handler = Handler(Looper.getMainLooper())
@@ -112,6 +113,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private val addedOnlineSubs = HashSet<String>()
     private var coreForced = false
     private var switching = false
+    private var isHandoff = false
 
     // mpv state (written from the mpv event thread, read on the main thread)
     @Volatile private var posSec = 0.0
@@ -184,6 +186,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
         coreForced = intent?.getBooleanExtra(PlayerCore.EXTRA_FORCED, false) == true
+        isHandoff = intent?.getBooleanExtra(PlayerCore.EXTRA_HANDOFF, false) == true
         hideSystemBars()
         setContentView(R.layout.mpv_player)
         bindViews()
@@ -208,6 +211,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         super.onNewIntent(intent)
         setIntent(intent)
         coreForced = intent.getBooleanExtra(PlayerCore.EXTRA_FORCED, false)
+        isHandoff = intent.getBooleanExtra(PlayerCore.EXTRA_HANDOFF, false)
         saveCurrent(stopped = true)
         originals.clear(); qualityLabel.clear()
         qualityCache.clear(); folderQualityApplied.clear(); jfFallbackTried.clear(); cloudLadderStep.clear()
@@ -336,20 +340,29 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         currentIndex = i
         PlayQueue.index = i
         val p = queue[i]
+        val savedPos = p.startMs
+        val isHandoffPlayback = isHandoff
+        isHandoff = false
+        val initialSeek = if (isHandoffPlayback) savedPos else 0L
+
         PlayerCore.bumpCloudRecent(p)
         titleView.text = listOfNotNull(p.title, p.subtitle).joinToString("  ·  ")
-        posSec = p.startMs / 1000.0
+        posSec = initialSeek / 1000.0
         durSec = 0.0
-        skipController.onIndexChanged(i, p.startMs)
+        skipController.onIndexChanged(i, initialSeek)
         updateChapterMarkers()
         smartSubPromptedIndex = -1
         hideSmartSubBubble()
+        dismissResumePrompt()
+        if (!isHandoffPlayback && savedPos > 3000L) {
+            showResumePrompt(savedPos)
+        }
         updateMediaSessionMetadata(p)
         updateMediaSessionState()
         reportStart(p)
 
         if (qualityLabel[i] != null) {
-            load(p, p.startMs)
+            load(p, initialSeek)
             val curLabel = qualityLabel[i]
             if (!curLabel.isNullOrEmpty() && curLabel != "原画") {
                 preResolveUpcomingMpv(i + 1, curLabel)
@@ -360,7 +373,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val orig = originals[i] ?: p
         val remembered = Repo.store.qualityForSeries(orig.seriesKey)
         if (remembered.isNullOrEmpty() || remembered == "原画") {
-            load(p, p.startMs)
+            load(p, initialSeek)
             return
         }
 
@@ -382,7 +395,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 queue[i] = newItem
                 qualityLabel[i] = preset.first
                 folderQualityApplied.add(i)
-                load(newItem, newItem.startMs)
+                load(newItem, initialSeek)
                 showHint("画质：${preset.first}（已记住本剧设置）")
                 preResolveUpcomingMpv(i + 1, remembered)
                 return
@@ -405,7 +418,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     queue[i] = newItem
                     qualityLabel[i] = hit.first
                     folderQualityApplied.add(i)
-                    load(newItem, newItem.startMs)
+                    load(newItem, initialSeek)
                     showHint("画质：${hit.first}（已记住本剧设置）")
                     preResolveUpcomingMpv(i + 1, remembered)
                     return
@@ -435,13 +448,13 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 } else {
                     orig
                 }
-                load(itemToPlay, itemToPlay.startMs)
+                load(itemToPlay, initialSeek)
                 preResolveUpcomingMpv(i + 1, remembered)
             }
             return
         }
 
-        load(p, p.startMs)
+        load(p, initialSeek)
     }
 
     /** If the user manually picked a quality in this cloud folder/series before, start new episodes at it. */
@@ -725,7 +738,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val dur = durMs
         val done = finished || (dur > 0 && pos > dur * 0.95)
         if (pos <= 0 && !done) return
-        p.resumeKey?.let { Repo.store.savePosition(it, if (done) 0 else pos) }
+        p.resumeKey?.let { Repo.store.saveProgress(it, pos, dur, done) }
         val id = p.jfItemId ?: return
         val client = Repo.jellyfin(p.sourceId ?: return) ?: return
         val isPaused = paused
@@ -802,6 +815,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
     private fun checkAutoSkip() {
         if (mpv == null || paused || !fileLoaded || currentIndex !in queue.indices) return
+        if (resumePromptView?.visibility == View.VISIBLE) return
         val pos = posMs
         val dur = durMs
         if (dur <= 0) return
@@ -829,6 +843,119 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             onChanged = { applyAudioBoost() },
             showHint = { showHint(it) }
         )
+    }
+
+    private var resumePromptView: View? = null
+    private var resumePromptText: TextView? = null
+    private var resumeCountdown: Int = 10
+    private var resumeTargetPos: Long = 0L
+    private val resumeCountdownRunnable = object : Runnable {
+        override fun run() {
+            resumeCountdown--
+            if (resumeCountdown <= 0) {
+                dismissResumePrompt()
+            } else {
+                resumePromptText?.text = "上次播放至 ${fmt(resumeTargetPos)} (${resumeCountdown}s)"
+                handler.postDelayed(this, 1000)
+            }
+        }
+    }
+
+    private fun dismissResumePrompt() {
+        handler.removeCallbacks(resumeCountdownRunnable)
+        resumePromptView?.let { prompt ->
+            if (prompt.visibility == View.VISIBLE) {
+                prompt.animate().alpha(0f).setDuration(250).withEndAction {
+                    prompt.visibility = View.GONE
+                }
+            }
+        }
+    }
+
+    private fun showResumePrompt(savedPos: Long) {
+        if (savedPos <= 3000L) return
+        val prompt = resumePromptView ?: return
+        handler.removeCallbacks(resumeCountdownRunnable)
+        resumeTargetPos = savedPos
+        resumeCountdown = 10
+        resumePromptText?.text = "上次播放至 ${fmt(savedPos)} (10s)"
+        prompt.alpha = 0f
+        prompt.visibility = View.VISIBLE
+        prompt.animate().alpha(1f).setDuration(250).start()
+        handler.postDelayed(resumeCountdownRunnable, 1000)
+    }
+
+    private fun buildResumePromptView(root: FrameLayout) {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xE6212121.toInt())
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), 0x55FFFFFF.toInt())
+            }
+            setPadding(dp(14), dp(6), dp(10), dp(6))
+            elevation = dp(6).toFloat()
+            visibility = View.GONE
+        }
+
+        val tv = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        resumePromptText = tv
+        container.addView(tv)
+
+        val btnContinue = TextView(this).apply {
+            text = "继续"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(0xFF3D7BE6.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            val lp = LinearLayout.LayoutParams(-2, -2).apply {
+                marginStart = dp(10)
+            }
+            layoutParams = lp
+            setOnClickListener {
+                seekTo(resumeTargetPos)
+                showHint("已跳转至上次播放位置")
+                dismissResumePrompt()
+            }
+        }
+        container.addView(btnContinue)
+
+        val btnCancel = TextView(this).apply {
+            text = "取消"
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 12f
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(0x33FFFFFF.toInt())
+                cornerRadius = dp(12).toFloat()
+            }
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            val lp = LinearLayout.LayoutParams(-2, -2).apply {
+                marginStart = dp(6)
+            }
+            layoutParams = lp
+            setOnClickListener {
+                dismissResumePrompt()
+            }
+        }
+        container.addView(btnCancel)
+
+        resumePromptView = container
+        val promptLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply {
+            marginStart = dp(16)
+            bottomMargin = dp(84)
+        }
+        root.addView(container, promptLp)
     }
 
     private var subBubbleView: View? = null
@@ -968,6 +1095,24 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             bumpControls()
         }
 
+        lockBtn = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_lock_open)
+            contentDescription = "锁定屏幕"
+            setBackgroundResource(R.drawable.rotate_fab_bg)
+            setColorFilter(Color.WHITE)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setOnClickListener {
+                lockScreen()
+            }
+        }
+        val root = findViewById<FrameLayout>(R.id.mpv_root)
+        root.addView(lockBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.CENTER_VERTICAL).apply {
+            marginEnd = dp(16)
+        })
+
+        buildResumePromptView(root)
+
         val step = Repo.store.seekStepSec
         findViewById<View>(R.id.mpv_prev).setOnClickListener { if (currentIndex > 0) playIndex(currentIndex - 1) else seekTo(0); bumpControls() }
         findViewById<View>(R.id.mpv_next).setOnClickListener { if (currentIndex + 1 < queue.size) playIndex(currentIndex + 1); bumpControls() }
@@ -992,7 +1137,11 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         findViewById<View>(R.id.mpv_duration).setOnClickListener(consumeAndBump)
         topBar.setOnClickListener(consumeAndBump)
         timeBar.addListener(object : TimeBar.OnScrubListener {
-            override fun onScrubStart(timeBar: TimeBar, position: Long) { scrubbing = true; handler.removeCallbacks(hideControlsRunnable) }
+            override fun onScrubStart(timeBar: TimeBar, position: Long) {
+                dismissResumePrompt()
+                scrubbing = true
+                handler.removeCallbacks(hideControlsRunnable)
+            }
             override fun onScrubMove(timeBar: TimeBar, position: Long) { posView.text = fmt(position) }
             override fun onScrubStop(timeBar: TimeBar, position: Long, canceled: Boolean) {
                 scrubbing = false
@@ -1053,6 +1202,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     private val hideControlsRunnable = Runnable { hideControls() }
     private fun showControls() {
         controls.visibility = View.VISIBLE
+        if (::lockBtn.isInitialized) lockBtn.visibility = View.VISIBLE
         bumpControls()
     }
     private fun bumpControls() {
@@ -1061,6 +1211,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     }
     private fun hideControls() {
         controls.visibility = View.GONE
+        if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
         hideSystemBars()
     }
 
@@ -1075,6 +1226,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     }
 
     private fun seekRelative(sec: Int) {
+        dismissResumePrompt()
         mpv?.command(arrayOf("seek", sec.toString(), "relative"))
         showHint(if (sec < 0) "⏪ ${-sec}秒" else "⏩ ${sec}秒")
     }
@@ -1530,11 +1682,13 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         )
     }
 
-    /** 防误触：藏起控制条，全屏锁住触摸，只留一个锁图标；点锁图标需确认才解锁。 */
+    /** 防误触：藏起控制条，全屏锁住触摸，只留一个锁图标；点锁图标秒解。 */
     private fun lockScreen() {
         handler.removeCallbacks(hideControlsRunnable)
         hideControls()
-        ScreenLock.lock(this)
+        ScreenLock.lock(this) {
+            showControls()
+        }
     }
 
     private fun fmtSpeed(s: Double) = "%.2f".format(s).trimEnd('0').trimEnd('.')
@@ -1643,11 +1797,18 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         }
         PlayQueue.set(list, currentIndex)
         toast("已切换到 ExoPlayer 内核")
-        PlayerCore.launch(this, mpv = false, forced = true)
+        PlayerCore.launch(this, mpv = false, forced = true, handoff = true)
         finish()
     }
 
     private fun isTouchInControlArea(rawX: Int, rawY: Int): Boolean {
+        // Resume prompt touches take precedence
+        val prompt = resumePromptView
+        if (prompt != null && prompt.visibility == View.VISIBLE) {
+            val rect = Rect()
+            prompt.getGlobalVisibleRect(rect)
+            if (rect.contains(rawX, rawY)) return true
+        }
         if (controls.visibility != View.VISIBLE) return false
         // 1. Top bar
         if (::topBar.isInitialized && topBar.visibility == View.VISIBLE) {
@@ -1659,6 +1820,12 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (::rotateBtn.isInitialized && rotateBtn.visibility == View.VISIBLE) {
             val rect = Rect()
             rotateBtn.getGlobalVisibleRect(rect)
+            if (rect.contains(rawX, rawY)) return true
+        }
+        // 2b. Lock button
+        if (::lockBtn.isInitialized && lockBtn.visibility == View.VISIBLE) {
+            val rect = Rect()
+            lockBtn.getGlobalVisibleRect(rect)
             if (rect.contains(rawX, rawY)) return true
         }
         // 3. Subtitle bubble
@@ -1725,6 +1892,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     bumpControls()
                     return true
                 }
+                dismissResumePrompt()
                 val w = touch.width
                 val step = Repo.store.seekStepSec
                 when {
@@ -1795,6 +1963,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                         mpv?.setPropertyDouble("speed", speedBeforeLongPress)
                     }
                     if (drag == Drag.SEEK) {
+                        dismissResumePrompt()
                         seekTo(targetPos)
                     }
                     drag = Drag.NONE
@@ -1821,7 +1990,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
 
         handler.removeCallbacks(hideControlsRunnable)
         controls.visibility = View.GONE
+        if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
         hintView.visibility = View.GONE
+        dismissResumePrompt()
 
         val w = mpv?.getPropertyInt("video-params/dw") ?: 0
         val h = mpv?.getPropertyInt("video-params/dh") ?: 0
@@ -1869,6 +2040,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (!entered) {
             isEnteringPip = false
             controls.visibility = View.VISIBLE
+            if (::lockBtn.isInitialized) lockBtn.visibility = View.VISIBLE
         }
     }
 
@@ -1900,7 +2072,9 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         if (isInPictureInPictureMode) {
             handler.removeCallbacks(hideControlsRunnable)
             controls.visibility = View.GONE
+            if (::lockBtn.isInitialized) lockBtn.visibility = View.GONE
             hintView.visibility = View.GONE
+            dismissResumePrompt()
         } else {
             PlayerOrientation.apply(this)
             hideSystemBars()
