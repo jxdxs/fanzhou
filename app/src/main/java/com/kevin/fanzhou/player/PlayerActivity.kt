@@ -2303,6 +2303,15 @@ class PlayerActivity : ComponentActivity() {
         updatePipParams()
     }
 
+    private fun stopPlaybackAndCleanUp() {
+        if (::player.isInitialized) {
+            reportStopCurrent()
+            player.pause()
+        }
+        mediaSession?.release()
+        mediaSession = null
+    }
+
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isEnteringPip = false
@@ -2315,6 +2324,10 @@ class PlayerActivity : ComponentActivity() {
             hintView.visibility = View.GONE
             dismissResumePrompt()
         } else {
+            if (isFinishing || isDestroyed) {
+                stopPlaybackAndCleanUp()
+                return
+            }
             PlayerOrientation.apply(this)
             hideSystemBars()
             updateRotateBtnPosition()
@@ -2333,6 +2346,10 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (isFinishing || isDestroyed) {
+            stopPlaybackAndCleanUp()
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) return
         if (::player.isInitialized) {
             reportStopCurrent()

@@ -2116,6 +2116,16 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         updatePipParams()
     }
 
+    private fun stopPlaybackAndCleanUp() {
+        if (mpv != null && !switching) {
+            saveCurrent(stopped = true)
+            mpv?.setPropertyBoolean("pause", true)
+        }
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
+    }
+
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isEnteringPip = false
@@ -2126,6 +2136,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             hintView.visibility = View.GONE
             dismissResumePrompt()
         } else {
+            if (isFinishing || isDestroyed) {
+                stopPlaybackAndCleanUp()
+                return
+            }
             PlayerOrientation.apply(this)
             hideSystemBars()
             updateRotateBtnPosition()
@@ -2149,6 +2163,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     override fun onStop() {
         super.onStop()
         try { unregisterReceiver(noisyReceiver) } catch (_: Throwable) {}
+        if (isFinishing || isDestroyed) {
+            stopPlaybackAndCleanUp()
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) return
         if (mpv != null && !switching) {
             saveCurrent(stopped = true)
