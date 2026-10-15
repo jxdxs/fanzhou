@@ -406,45 +406,6 @@ class PlayerActivity : ComponentActivity() {
         }
         root.addView(hintView, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
 
-        subBubbleView = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply {
-                setColor(0xE6212121.toInt())
-                cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), 0x55FFFFFF.toInt())
-            }
-            setPadding(dp(12), dp(6), dp(10), dp(6))
-            elevation = dp(6).toFloat()
-            visibility = View.GONE
-
-            val tv = TextView(this@PlayerActivity).apply {
-                text = "💬 匹配在线中文字幕"
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-            }
-            addView(tv)
-
-            val closeBtn = TextView(this@PlayerActivity).apply {
-                text = "✕"
-                setTextColor(0xAAFFFFFF.toInt())
-                textSize = 14f
-                setPadding(dp(8), 0, dp(4), 0)
-                setOnClickListener { hideSmartSubBubble() }
-            }
-            addView(closeBtn)
-
-            setOnClickListener {
-                hideSmartSubBubble()
-                showOnlineSubSearch()
-            }
-        }
-        val bubbleLp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END)
-        bubbleLp.marginEnd = dp(16)
-        bubbleLp.bottomMargin = dp(84)
-        root.addView(subBubbleView, bubbleLp)
-
         buildResumePromptView(root)
 
         setContentView(root)
@@ -500,14 +461,6 @@ class PlayerActivity : ComponentActivity() {
             val rect = Rect()
             lockBtn.getGlobalVisibleRect(rect)
             if (rect.contains(rawX, rawY)) return true
-        }
-        // 3. Subtitle bubble
-        subBubbleView?.let { bubble ->
-            if (bubble.visibility == View.VISIBLE) {
-                val rect = Rect()
-                bubble.getGlobalVisibleRect(rect)
-                if (rect.contains(rawX, rawY)) return true
-            }
         }
         // 4. Bottom bar area (progress row + bottom bar)
         val progressRow = playerView.findViewById<View>(R.id.fz_progress_row)
@@ -1057,57 +1010,6 @@ class PlayerActivity : ComponentActivity() {
             bottomMargin = dp(84)
         }
         root.addView(container, promptLp)
-    }
-
-    private var subBubbleView: View? = null
-    private var smartSubPromptedIndex = -1
-
-    private fun hideSmartSubBubble() {
-        handler.removeCallbacks(dismissSmartSubBubble)
-        subBubbleView?.visibility = View.GONE
-    }
-
-    private val dismissSmartSubBubble = Runnable {
-        subBubbleView?.animate()?.alpha(0f)?.setDuration(350)?.withEndAction {
-            subBubbleView?.visibility = View.GONE
-        }
-    }
-
-    private fun showSmartSubBubble() {
-        val bubble = subBubbleView ?: return
-        handler.removeCallbacks(dismissSmartSubBubble)
-        bubble.alpha = 0f
-        bubble.visibility = View.VISIBLE
-        bubble.animate().alpha(1f).setDuration(250).start()
-        handler.postDelayed(dismissSmartSubBubble, 7000)
-    }
-
-    private fun checkSmartSubBubble() {
-        if (!com.kevin.fanzhou.subtitle.OnlineSubtitles.anyConfigured()) return
-        if (currentIndex < 0 || currentIndex == smartSubPromptedIndex) return
-        if (!::player.isInitialized) return
-        val tracks = player.currentTracks
-        val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-        val hasChinese = textGroups.any { g ->
-            (0 until g.length).any { i ->
-                val f = g.getTrackFormat(i)
-                val lang = f.language?.lowercase() ?: ""
-                val label = f.label?.lowercase() ?: ""
-                lang in setOf("zh", "chi", "zho", "chs", "cht", "cmn", "yue") ||
-                    label.contains("中") || label.contains("简") || label.contains("繁") ||
-                    label.contains("chs") || label.contains("cht") || label.contains("chinese")
-            }
-        }
-        val p = queue.getOrNull(currentIndex)
-        val hasExtChinese = p?.subtitles?.any { s ->
-            val t = (s.label + " " + (s.lang ?: "")).lowercase()
-            t.contains("zh") || t.contains("chi") || t.contains("中") || t.contains("简") || t.contains("繁")
-        } == true
-
-        if (!hasChinese && !hasExtChinese) {
-            smartSubPromptedIndex = currentIndex
-            showSmartSubBubble()
-        }
     }
 
     private var lastPos = 0L
@@ -1891,8 +1793,6 @@ class PlayerActivity : ComponentActivity() {
             val savedPos = queue[newIndex].startMs
             skipController.onIndexChanged(newIndex, 0L)
             updateChapterMarkers()
-            smartSubPromptedIndex = -1
-            hideSmartSubBubble()
             dismissResumePrompt()
             if (savedPos > 3000L && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                 showResumePrompt(savedPos)
@@ -1953,7 +1853,6 @@ class PlayerActivity : ComponentActivity() {
                 selectOnlineSubtitleTrack(tracks)
             }
             updateSubtitleButton()
-            checkSmartSubBubble()
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {

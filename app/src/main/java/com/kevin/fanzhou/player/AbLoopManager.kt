@@ -98,7 +98,6 @@ object AbLoopDialog {
                 setStroke(dp(1), 0x55FFFFFF.toInt())
             }
             setPadding(dp(16), dp(14), dp(16), dp(14))
-            elevation = dp(14).toFloat()
             isClickable = true
             layoutParams = FrameLayout.LayoutParams(cardWidth, -2, Gravity.CENTER)
         }
@@ -285,23 +284,35 @@ object AbLoopDialog {
         }
 
         fun showSegmentActions(seg: AbSegment) {
-            val modal = FrameLayout(activity).apply {
-                layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-                setBackgroundColor(0x66000000)
-                isClickable = true
-                isFocusable = true
-                setOnClickListener { overlay.removeView(this) }
+            card.alpha = 0.35f
+
+            lateinit var modal: FrameLayout
+            fun dismissModal() {
+                overlay.removeView(modal)
+                card.alpha = 1f
             }
 
-            val modalWidth = (260 * dm.density).toInt().coerceAtMost(dm.widthPixels - dp(32))
+            modal = FrameLayout(activity).apply {
+                layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                setBackgroundColor(0x88000000.toInt())
+                elevation = dp(50).toFloat()
+                translationZ = dp(50).toFloat()
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { dismissModal() }
+            }
+
+            val modalWidth = minOf(cardWidth, (280 * dm.density).toInt())
             val modalCard = LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
-                    setColor(0xF5262626.toInt())
+                    setColor(0xF8262626.toInt())
                     cornerRadius = dp(12).toFloat()
-                    setStroke(dp(1), 0x55FFFFFF.toInt())
+                    setStroke(dp(1), 0x88FFFFFF.toInt())
                 }
-                setPadding(dp(16), dp(14), dp(16), dp(12))
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                elevation = dp(52).toFloat()
+                translationZ = dp(52).toFloat()
                 layoutParams = FrameLayout.LayoutParams(modalWidth, -2, Gravity.CENTER)
                 isClickable = true
             }
@@ -309,7 +320,7 @@ object AbLoopDialog {
             val titleTv = TextView(activity).apply {
                 text = seg.name
                 setTextColor(Color.WHITE)
-                textSize = 14f
+                textSize = 15f
                 typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 maxLines = 1
@@ -337,17 +348,17 @@ object AbLoopDialog {
                 text = "编辑"
                 setTextColor(Color.WHITE)
                 textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 background = GradientDrawable().apply {
                     cornerRadius = dp(6).toFloat()
-                    setColor(0x331976D2.toInt())
-                    setStroke(dp(1), 0xFF1976D2.toInt())
+                    setColor(0xFF1976D2.toInt())
                 }
-                setPadding(0, dp(8), 0, dp(8))
+                setPadding(0, dp(9), 0, dp(9))
                 layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) }
                 isClickable = true
                 setOnClickListener {
-                    overlay.removeView(modal)
+                    dismissModal()
                     renderEditImpl(seg)
                 }
             }
@@ -357,17 +368,18 @@ object AbLoopDialog {
                 text = "删除"
                 setTextColor(0xFFFF5252.toInt())
                 textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 background = GradientDrawable().apply {
                     cornerRadius = dp(6).toFloat()
-                    setColor(0x22F44336.toInt())
+                    setColor(0x33F44336.toInt())
                     setStroke(dp(1), 0x66F44336.toInt())
                 }
-                setPadding(0, dp(8), 0, dp(8))
-                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
+                setPadding(0, dp(9), 0, dp(9))
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) }
                 isClickable = true
                 setOnClickListener {
-                    overlay.removeView(modal)
+                    dismissModal()
                     renderConfirmDeleteImpl(seg)
                 }
             }
@@ -378,17 +390,23 @@ object AbLoopDialog {
                 setTextColor(0xAAFFFFFF.toInt())
                 textSize = 13f
                 gravity = Gravity.CENTER
-                setPadding(0, dp(6), 0, dp(4))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(6).toFloat()
+                    setColor(0x22FFFFFF.toInt())
+                }
+                setPadding(0, dp(8), 0, dp(8))
                 layoutParams = LinearLayout.LayoutParams(-1, -2)
                 isClickable = true
                 setOnClickListener {
-                    overlay.removeView(modal)
+                    dismissModal()
                 }
             }
             modalCard.addView(cancelBtn)
 
             modal.addView(modalCard)
             overlay.addView(modal)
+            overlay.bringChildToFront(modal)
+            modal.bringToFront()
         }
 
         fun renderConfirmDelete(seg: AbSegment) {

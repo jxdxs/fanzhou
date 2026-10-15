@@ -219,4 +219,24 @@ class ActTest {
         val preserved = com.kevin.fanzhou.data.Repo.store.position(item.effectiveResumeKey)
         org.junit.Assert.assertEquals("5-minute progress should be preserved after short exit without resume", saved, preserved)
     }
+
+    @Test
+    fun testNoSubtitleBubbleOnVideoOpen() {
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse("file:///sdcard/test_sub.mp4"))
+        val ctl = Robolectric.buildActivity(PlayerActivity::class.java, i).setup()
+        val act = ctl.get()
+        repeat(10) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100)) }
+
+        val root = act.window.decorView as ViewGroup
+        fun hasBubbleText(v: View): Boolean {
+            if (v is TextView && v.text?.contains("匹配在线中文字幕") == true) return true
+            if (v is ViewGroup) {
+                for (idx in 0 until v.childCount) {
+                    if (hasBubbleText(v.getChildAt(idx))) return true
+                }
+            }
+            return false
+        }
+        org.junit.Assert.assertFalse("Subtitle bubble should not appear when opening video", hasBubbleText(root))
+    }
 }

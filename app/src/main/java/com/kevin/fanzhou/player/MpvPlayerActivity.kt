@@ -370,8 +370,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         durSec = 0.0
         skipController.onIndexChanged(i, initialSeek)
         updateChapterMarkers()
-        smartSubPromptedIndex = -1
-        hideSmartSubBubble()
         dismissResumePrompt()
         if (!isHandoffPlayback && savedPos > 3000L) {
             showResumePrompt(savedPos)
@@ -644,7 +642,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         applyAudioBoost()
         applySubtitleStyle()
         updatePipParams()
-        handler.postDelayed({ checkSmartSubBubble() }, 600)
     }
 
     private fun onLoadFailed() {
@@ -988,50 +985,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         root.addView(container, promptLp)
     }
 
-    private var subBubbleView: View? = null
-    private var smartSubPromptedIndex = -1
-
-    private fun hideSmartSubBubble() {
-        handler.removeCallbacks(dismissSmartSubBubble)
-        subBubbleView?.visibility = View.GONE
-    }
-
-    private val dismissSmartSubBubble = Runnable {
-        subBubbleView?.animate()?.alpha(0f)?.setDuration(350)?.withEndAction {
-            subBubbleView?.visibility = View.GONE
-        }
-    }
-
-    private fun showSmartSubBubble() {
-        val bubble = subBubbleView ?: return
-        handler.removeCallbacks(dismissSmartSubBubble)
-        bubble.alpha = 0f
-        bubble.visibility = View.VISIBLE
-        bubble.animate().alpha(1f).setDuration(250).start()
-        handler.postDelayed(dismissSmartSubBubble, 7000)
-    }
-
-    private fun checkSmartSubBubble() {
-        if (!OnlineSubtitles.anyConfigured()) return
-        if (currentIndex < 0 || currentIndex == smartSubPromptedIndex) return
-        if (mpv == null || !fileLoaded) return
-        val subs = tracks("sub")
-        val hasChinese = subs.any { t ->
-            val l = t.label.lowercase()
-            l.contains("中") || l.contains("简") || l.contains("繁") || l.contains("chs") || l.contains("cht") || l.contains("chi")
-        }
-        val p = queue.getOrNull(currentIndex)
-        val hasExtChinese = p?.subtitles?.any { s ->
-            val t = (s.label + " " + (s.lang ?: "")).lowercase()
-            t.contains("zh") || t.contains("chi") || t.contains("中") || t.contains("简") || t.contains("繁")
-        } == true
-
-        if (!hasChinese && !hasExtChinese) {
-            smartSubPromptedIndex = currentIndex
-            showSmartSubBubble()
-        }
-    }
-
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (AudioManager.ACTION_AUDIO_BECOMING_NOISY == intent?.action) {
@@ -1192,45 +1145,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 bumpControls()
             }
         })
-        subBubbleView = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply {
-                setColor(0xE6212121.toInt())
-                cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), 0x55FFFFFF.toInt())
-            }
-            setPadding(dp(12), dp(6), dp(10), dp(6))
-            elevation = dp(6).toFloat()
-            visibility = View.GONE
-
-            val tv = TextView(this@MpvPlayerActivity).apply {
-                text = "💬 匹配在线中文字幕"
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-            }
-            addView(tv)
-
-            val closeBtn = TextView(this@MpvPlayerActivity).apply {
-                text = "✕"
-                setTextColor(0xAAFFFFFF.toInt())
-                textSize = 14f
-                setPadding(dp(8), 0, dp(4), 0)
-                setOnClickListener { hideSmartSubBubble() }
-            }
-            addView(closeBtn)
-
-            setOnClickListener {
-                hideSmartSubBubble()
-                showOnlineSubSearch()
-            }
-        }
-        findViewById<FrameLayout>(R.id.mpv_root).addView(subBubbleView, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
-            marginEnd = dp(16)
-            bottomMargin = dp(84)
-        })
-
         attachGestures()
 
         val pipLayoutListener = View.OnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -1922,14 +1836,6 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             val rect = Rect()
             lockBtn.getGlobalVisibleRect(rect)
             if (rect.contains(rawX, rawY)) return true
-        }
-        // 3. Subtitle bubble
-        subBubbleView?.let { bubble ->
-            if (bubble.visibility == View.VISIBLE) {
-                val rect = Rect()
-                bubble.getGlobalVisibleRect(rect)
-                if (rect.contains(rawX, rawY)) return true
-            }
         }
         // 4. Bottom bar area (progress row + bottom bar)
         val progressRow = findViewById<View>(R.id.mpv_progress_row)
