@@ -14,15 +14,14 @@ import androidx.media3.exoplayer.upstream.Allocator
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 
 /**
- * 双条件协同加载控制：
- * 必须【同时满足】「目标缓存容量（Bytes）」与「目标预加载时长（Duration）」两个条件才会停止预加载，
- * 避免单一条件（仅时间或仅容量）满足就过早中断流媒体缓冲导致的快进卡顿。
+ * 时间驱动型流媒体预加载控制：
+ * 持续预加载指定深度时长（3 / 5 / 8 分钟），
+ * 并配置严格的 Java 堆内存上限保护，坚决防止内存溢出（OOM）导致播放界面闪退。
  */
 @OptIn(UnstableApi::class)
 class DualConditionLoadControl(
     private val base: DefaultLoadControl,
     private val allocator: DefaultAllocator,
-    private val targetBytes: Long,
     private val targetDurationUs: Long,
     private val maxSafeBytes: Long,
     private val minBufferUs: Long = 30_000_000L,
@@ -106,16 +105,16 @@ class DualConditionLoadControl(
 
     override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean {
         val allocated = allocator.totalBytesAllocated.toLong()
+        // 1. 堆内存硬保护：超过安全上限立即停止加载，坚决杜绝 OOM 导致播放界面闪退
         if (allocated >= maxSafeBytes) {
             return false
         }
+        // 2. 基础保底缓冲：未满 minBufferUs (30秒) 持续缓冲
         if (parameters.bufferedDurationUs < minBufferUs) {
             return true
         }
-        val sizeMet = allocated >= targetBytes
-        val timeMet = parameters.bufferedDurationUs >= targetDurationUs
-        // 需两个条件均满足才停止预加载；若任一条件未达标则持续预加载
-        if (sizeMet && timeMet) {
+        // 3. 达到设定的预加载时长（3 / 5 / 8 分钟）即停止继续预加载
+        if (parameters.bufferedDurationUs >= targetDurationUs) {
             return false
         }
         return true
@@ -134,9 +133,7 @@ class DualConditionLoadControl(
         if (bufferedDurationUs < minBufferUs) {
             return true
         }
-        val sizeMet = allocated >= targetBytes
-        val timeMet = bufferedDurationUs >= targetDurationUs
-        if (sizeMet && timeMet) {
+        if (bufferedDurationUs >= targetDurationUs) {
             return false
         }
         return true
@@ -146,7 +143,19 @@ class DualConditionLoadControl(
         timeline: Timeline,
         mediaPeriodId: MediaSource.MediaPeriodId,
         bufferedDurationUs: Long
-    ): Boolean = base.shouldContinuePreloading(timeline, mediaPeriodId, bufferedDurationUs)
+    ): Boolean {
+        val allocated = allocator.totalBytesAllocated.toLong()
+        if (allocated >= maxSafeBytes) {
+            return false
+        }
+        if (bufferedDurationUs < minBufferUs) {
+            return true
+        }
+        if (bufferedDurationUs >= targetDurationUs) {
+            return false
+        }
+        return true
+    }
 
     override fun shouldStartPlayback(parameters: LoadControl.Parameters): Boolean =
         base.shouldStartPlayback(parameters)

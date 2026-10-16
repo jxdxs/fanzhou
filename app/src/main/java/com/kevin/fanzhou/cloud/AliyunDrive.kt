@@ -194,34 +194,65 @@ class AliyunDrive(source: Source) : CloudDrive(source) {
         return Resolved(url, mapOf("Referer" to "https://www.alipan.com/"))
     }
 
-    override suspend fun resolveTranscode(file: CloudFile): Resolved? {
-        val body = buildJsonObject {
-            put("drive_id", file.extra ?: ""); put("file_id", file.id); put("category", "live_transcoding")
+    private suspend fun fetchVideoPlayInfo(file: CloudFile): JsonObject? {
+        val driveId = file.extra ?: ""
+        // 优先尝试 quick_video（边转边播 2.0，快速生成完整播放列表切片，支持长时大缓存预加载）
+        val bodyQuick = buildJsonObject {
+            put("drive_id", driveId); put("file_id", file.id); put("category", "quick_video")
             put("template_id", ""); put("get_subtitle_info", true); put("url_expire_sec", 14400)
         }.toString()
-        val o = post("https://api.alipan.com/v2/file/get_video_preview_play_info", body)
-        val tasks = o["video_preview_play_info"].obj()?.get("live_transcoding_task_list") as? JsonArray ?: return null
-        val order = listOf("QHD", "FHD", "HD", "SD", "LD")
-        val best = tasks.mapNotNull { it.obj() }
-            .filter { it.str("status") == "finished" && !it.str("url").isNullOrEmpty() }
-            .minByOrNull { order.indexOf(it.str("template_id")).let { i -> if (i < 0) 99 else i } } ?: return null
+        val oQuick = runCatching { post("https://api.alipan.com/v2/file/get_video_preview_play_info", bodyQuick) }.getOrNull()
+        val previewQuick = oQuick?.get("video_preview_play_info")?.obj()
+        val quickTasks = (previewQuick?.get("quick_video_list") as? JsonArray)
+            ?: (previewQuick?.get("live_transcoding_task_list") as? JsonArray)
+        if (quickTasks?.any { it.obj()?.str("status") == "finished" && !it.obj()?.str("url").isNullOrEmpty() } == true) {
+            return oQuick
+        }
+        // 回退至传统 live_transcoding
+        val bodyLive = buildJsonObject {
+            put("drive_id", driveId); put("file_id", file.id); put("category", "live_transcoding")
+            put("template_id", ""); put("get_subtitle_info", true); put("url_expire_sec", 14400)
+        }.toString()
+        return runCatching { post("https://api.alipan.com/v2/file/get_video_preview_play_info", bodyLive) }.getOrNull()
+    }
+
+    private fun extractTasks(o: JsonObject?): List<JsonObject> {
+        val preview = o?.get("video_preview_play_info")?.obj() ?: return emptyList()
+        val quick = (preview["quick_video_list"] as? JsonArray)?.mapNotNull { it.obj() }
+            ?.filter { it.str("status") == "finished" && !it.str("url").isNullOrEmpty() }.orEmpty()
+        if (quick.isNotEmpty()) return quick
+        return (preview["live_transcoding_task_list"] as? JsonArray)?.mapNotNull { it.obj() }
+            ?.filter { it.str("status") == "finished" && !it.str("url").isNullOrEmpty() }.orEmpty()
+    }
+
+    private val templateNames = linkedMapOf(
+        "264_1440p" to "2K", "QHD" to "2K",
+        "264_1080p" to "超清 1080P", "FHD" to "超清 1080P",
+        "264_720p" to "高清 720P", "HD" to "高清 720P",
+        "264_540p" to "标清 540P", "SD" to "标清 540P",
+        "264_480p" to "标清 480P",
+        "264_360p" to "流畅 360P", "LD" to "流畅 360P",
+    )
+
+    override suspend fun resolveTranscode(file: CloudFile): Resolved? {
+        val o = fetchVideoPlayInfo(file) ?: return null
+        val tasks = extractTasks(o)
+        val order = templateNames.keys.toList()
+        val best = tasks.minByOrNull { order.indexOf(it.str("template_id")).let { i -> if (i < 0) 99 else i } } ?: return null
         return Resolved(best.str("url")!!, mapOf("Referer" to "https://www.alipan.com/"), "application/x-mpegURL")
     }
 
     override suspend fun qualities(file: CloudFile): List<Pair<String, Resolved>> {
-        val body = buildJsonObject {
-            put("drive_id", file.extra ?: ""); put("file_id", file.id); put("category", "live_transcoding")
-            put("template_id", ""); put("get_subtitle_info", true); put("url_expire_sec", 14400)
-        }.toString()
-        val o = post("https://api.alipan.com/v2/file/get_video_preview_play_info", body)
-        val tasks = o["video_preview_play_info"].obj()?.get("live_transcoding_task_list") as? JsonArray ?: return emptyList()
-        val names = linkedMapOf("QHD" to "2K", "FHD" to "超清 1080P", "HD" to "高清 720P", "SD" to "标清 540P", "LD" to "流畅 360P")
-        val order = names.keys.toList()
-        return tasks.mapNotNull { it.obj() }
-            .filter { it.str("status") == "finished" && !it.str("url").isNullOrEmpty() }
-            .sortedBy { order.indexOf(it.str("template_id")).let { i -> if (i < 0) 99 else i } }
-            .map { t -> (names[t.str("template_id")] ?: t.str("template_id") ?: "转码") to
-                Resolved(t.str("url")!!, mapOf("Referer" to "https://www.alipan.com/"), "application/x-mpegURL") }
+        val o = fetchVideoPlayInfo(file) ?: return emptyList()
+        val tasks = extractTasks(o)
+        val order = templateNames.keys.toList()
+        return tasks.sortedBy { order.indexOf(it.str("template_id")).let { i -> if (i < 0) 99 else i } }
+            .distinctBy { templateNames[it.str("template_id")] ?: it.str("template_id") ?: "转码" }
+            .map { t ->
+                val tid = t.str("template_id") ?: ""
+                (templateNames[tid] ?: tid.ifEmpty { "转码" }) to
+                    Resolved(t.str("url")!!, mapOf("Referer" to "https://www.alipan.com/"), "application/x-mpegURL")
+            }
     }
 
     class Login : QrLogin {

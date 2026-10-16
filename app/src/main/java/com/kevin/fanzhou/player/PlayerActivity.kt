@@ -62,6 +62,8 @@ import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kevin.fanzhou.R
@@ -611,16 +613,14 @@ class PlayerActivity : ComponentActivity() {
         val renderers = DefaultRenderersFactory(this)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-        val bufMb = Repo.store.bufferSizeMb
-        val preloadMinutes = Repo.store.preloadMinutes
-        val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-        val targetBytes = bufMb * 1024L * 1024L
+        val preloadMinutes = Repo.store.preloadMinutes.let { if (it in setOf(3, 5, 8)) it else 3 }
         val targetDurationUs = preloadMinutes * 60 * 1_000_000L
-        val maxSafeBytes = maxOf(targetBytes, (maxHeapMb * 0.60 * 1024 * 1024).toLong())
-            .coerceIn(128L * 1024 * 1024, 1024L * 1024 * 1024)
+        val maxHeapBytes = Runtime.getRuntime().maxMemory()
+        // 严格控制缓存占用堆内存比例（不超过 35%，上限 256MB，坚决防止 OOM 导致闪退）
+        val maxSafeBytes = (maxHeapBytes * 0.35).toLong().coerceIn(64L * 1024 * 1024, 256L * 1024 * 1024)
 
         val allocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
-        val maxBufferMs = (preloadMinutes * 60 * 1000).coerceAtLeast(300_000)
+        val maxBufferMs = preloadMinutes * 60 * 1000
         val baseLoadControl = DefaultLoadControl.Builder()
             .setAllocator(allocator)
             .setBufferDurationsMs(
@@ -629,18 +629,18 @@ class PlayerActivity : ComponentActivity() {
                 1500,
                 2500
             )
-            .setTargetBufferBytes(targetBytes.toInt().coerceAtLeast(DefaultLoadControl.DEFAULT_MIN_BUFFER_SIZE))
+            .setTargetBufferBytes(maxSafeBytes.toInt())
             .setPrioritizeTimeOverSizeThresholds(true)
             .setBackBuffer(60_000, true)
             .build()
         val loadControl = DualConditionLoadControl(
             base = baseLoadControl,
             allocator = allocator,
-            targetBytes = targetBytes,
             targetDurationUs = targetDurationUs,
             maxSafeBytes = maxSafeBytes
         )
         player = ExoPlayer.Builder(this, renderers)
+            .setMediaSourceFactory(mediaSourceFactory(emptyMap()))
             .setLoadControl(loadControl)
             .setSeekBackIncrementMs(Repo.store.seekStepSec * 1000L)
             .setSeekForwardIncrementMs(Repo.store.seekStepSec * 1000L)
@@ -665,7 +665,7 @@ class PlayerActivity : ComponentActivity() {
         handler.postDelayed(skipCheckTick, 500)
     }
 
-    private fun mediaSourceFactory(headers: Map<String, String>): DefaultMediaSourceFactory {
+    private fun mediaSourceFactory(headers: Map<String, String>): MediaSource.Factory {
         val ds = OkHttpDataSource.Factory(Repo.http).setDefaultRequestProperties(headers)
         val dsf = androidx.media3.datasource.DefaultDataSource.Factory(this, ds)
         // cloud://<source>/<file> URIs are resolved to fresh signed links right before each request.
@@ -677,7 +677,37 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         // smb:// is read through smbj; everything else goes through the resolving http chain.
-        return DefaultMediaSourceFactory(SchemeRoutingDataSource.Factory(resolving))
+        val routing = SchemeRoutingDataSource.Factory(resolving)
+        val defaultFactory = DefaultMediaSourceFactory(routing)
+        val hlsFactory = HlsMediaSource.Factory(routing)
+            .setAllowChunklessPreparation(false)
+
+        return object : MediaSource.Factory {
+            override fun setDrmSessionManagerProvider(drmSessionManagerProvider: androidx.media3.exoplayer.drm.DrmSessionManagerProvider) = apply {
+                defaultFactory.setDrmSessionManagerProvider(drmSessionManagerProvider)
+                hlsFactory.setDrmSessionManagerProvider(drmSessionManagerProvider)
+            }
+
+            override fun setLoadErrorHandlingPolicy(loadErrorHandlingPolicy: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy) = apply {
+                defaultFactory.setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+                hlsFactory.setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+            }
+
+            override fun getSupportedTypes(): IntArray = defaultFactory.supportedTypes
+
+            override fun createMediaSource(mediaItem: MediaItem): MediaSource {
+                val uri = mediaItem.localConfiguration?.uri ?: return defaultFactory.createMediaSource(mediaItem)
+                val mime = mediaItem.localConfiguration?.mimeType
+                val isHls = mime == "application/x-mpegURL" ||
+                    uri.path?.lowercase()?.endsWith(".m3u8") == true ||
+                    uri.toString().contains(".m3u8", ignoreCase = true)
+                return if (isHls) {
+                    hlsFactory.createMediaSource(mediaItem)
+                } else {
+                    defaultFactory.createMediaSource(mediaItem)
+                }
+            }
+        }
     }
 
     private fun toMediaItem(p: PlayItem, i: Int): MediaItem {
@@ -690,9 +720,10 @@ class PlayerActivity : ComponentActivity() {
                 .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
                 .build()
         }
+        val effectiveMime = p.mime ?: if (p.url.contains(".m3u8", ignoreCase = true)) "application/x-mpegURL" else null
         return MediaItem.Builder()
             .setUri(p.url)
-            .setMimeType(p.mime)
+            .setMimeType(effectiveMime)
             .setMediaId(i.toString())
             .setSubtitleConfigurations(subs)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(p.title).setSubtitle(p.subtitle).build())
@@ -738,7 +769,7 @@ class PlayerActivity : ComponentActivity() {
                 val client = Repo.jellyfin(sid)
                 val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == remembered }
                 if (client != null && preset != null) {
-                    val updated = startItem.copy(url = client.transcodeUrl(jfId, startItem.jfMediaSourceId, preset.second, preset.third), headers = emptyMap(), mime = null)
+                    val updated = startItem.copy(url = client.transcodeUrl(jfId, startItem.jfMediaSourceId, preset.second, preset.third), headers = emptyMap(), mime = "application/x-mpegURL")
                     originals[start] = startItem
                     queue[start] = updated
                     qualityLabel[start] = remembered
@@ -1127,7 +1158,7 @@ class PlayerActivity : ComponentActivity() {
                 val client = Repo.jellyfin(sid) ?: return@launch
                 val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == remembered } ?: return@launch
                 val pos = player.currentPosition.coerceAtLeast(0)
-                val updated = orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = emptyMap(), mime = null, startMs = pos)
+                val updated = orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = emptyMap(), mime = "application/x-mpegURL", startMs = pos)
                 qualityLabel[idx] = remembered
                 replaceCurrent(updated, pos)
                 showHint("画质：$remembered（已记住本剧设置）")
@@ -1947,9 +1978,15 @@ class PlayerActivity : ComponentActivity() {
 
     private fun replaceCurrent(newItem: PlayItem, pos: Long) {
         val idx = currentIndex
+        if (!::player.isInitialized || idx !in 0 until player.mediaItemCount || idx !in queue.indices) return
         originals.getOrPut(idx) { queue[idx] }
         queue[idx] = newItem
-        val ms = mediaSourceFactory(newItem.headers).createMediaSource(toMediaItem(newItem, idx))
+        val ms = try {
+            mediaSourceFactory(newItem.headers).createMediaSource(toMediaItem(newItem, idx))
+        } catch (e: Exception) {
+            toast("加载媒体源失败: ${e.message}")
+            return
+        }
         replacingCurrent = true
         try {
             val wasPlaying = player.isPlaying
@@ -1958,6 +1995,8 @@ class PlayerActivity : ComponentActivity() {
             player.seekTo(idx, pos)
             player.prepare()
             if (wasPlaying) player.play()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "replaceCurrent failed", e)
         } finally {
             replacingCurrent = false
         }
@@ -1987,7 +2026,7 @@ class PlayerActivity : ComponentActivity() {
                     val updated = item.copy(
                         url = client.transcodeUrl(jfId, item.jfMediaSourceId, preset.second, preset.third),
                         headers = emptyMap(),
-                        mime = null
+                        mime = "application/x-mpegURL"
                     )
                     withContext(Dispatchers.Main) {
                         originals.getOrPut(idx) { item }
@@ -2032,7 +2071,7 @@ class PlayerActivity : ComponentActivity() {
         val pos = player.currentPosition
         val remembered = Repo.store.qualityForSeries(p.seriesKey)
         val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == remembered } ?: PlayerCore.JF_PRESETS[1]
-        val newItem = p.copy(url = client.transcodeUrl(id, p.jfMediaSourceId, preset.second, preset.third), startMs = pos)
+        val newItem = p.copy(url = client.transcodeUrl(id, p.jfMediaSourceId, preset.second, preset.third), startMs = pos, mime = "application/x-mpegURL")
         originals.getOrPut(currentIndex) { p }
         val label = preset.first
         qualityLabel[currentIndex] = label
@@ -2057,7 +2096,7 @@ class PlayerActivity : ComponentActivity() {
                 val client = Repo.jellyfin(orig.sourceId ?: return) ?: return
                 val presets = PlayerCore.JF_PRESETS
                 val opts = listOf<Pair<String, (() -> PlayItem)>>("原画" to { orig }) + presets.map { (label, br, w) ->
-                    label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap(), mime = null) }
+                    label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap(), mime = "application/x-mpegURL") }
                 }
                 pickQuality(idx, opts, anchor)
             }
@@ -2340,9 +2379,8 @@ class PlayerActivity : ComponentActivity() {
             hintView.visibility = View.GONE
             dismissResumePrompt()
         } else {
-            if (isFinishing || isDestroyed || lifecycle.currentState <= androidx.lifecycle.Lifecycle.State.CREATED) {
+            if (isFinishing || isDestroyed) {
                 stopPlaybackAndCleanUp()
-                finish()
                 return
             }
             PlayerOrientation.apply(this)

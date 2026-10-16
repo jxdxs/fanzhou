@@ -72,10 +72,13 @@ class Store(context: Context) {
         get() = prefs.getInt("buffer_size_mb", 256).coerceIn(32, 1024)
         set(v) { prefs.edit().putInt("buffer_size_mb", v.coerceIn(32, 1024)).apply() }
 
-    /** 预加载缓冲时长 (分钟): 1, 2, 3, 5，默认 2 */
+    /** 预加载缓冲时长 (分钟): 3, 5, 8，默认 3 */
     var preloadMinutes: Int
-        get() = prefs.getInt("preload_minutes", 2).coerceIn(1, 10)
-        set(v) { prefs.edit().putInt("preload_minutes", v.coerceIn(1, 10)).apply() }
+        get() {
+            val v = prefs.getInt("preload_minutes", 3)
+            return if (v in setOf(3, 5, 8)) v else 3
+        }
+        set(v) { prefs.edit().putInt("preload_minutes", if (v in setOf(3, 5, 8)) v else 3).apply() }
 
     /** Manually picked quality label remembered per series/folder ("source:folder" or "jf:source:title" key). */
     fun qualityForSeries(seriesKey: String): String? {

@@ -248,21 +248,19 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         m.setOptionString("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
         m.setOptionString("ao", "audiotrack,opensles")
         m.setOptionString("tls-verify", "no")
-        val bufMb = Repo.store.bufferSizeMb
-        val preloadMinutes = Repo.store.preloadMinutes
-        val preloadSec = (preloadMinutes * 60).coerceIn(60, 600)
+        val preloadMinutes = Repo.store.preloadMinutes.let { if (it in setOf(3, 5, 8)) it else 3 }
+        val preloadSec = preloadMinutes * 60
         val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-        val targetBytes = bufMb * 1024L * 1024L
-        val maxSafeBytes = maxOf(targetBytes, (maxHeapMb * 0.60 * 1024 * 1024).toLong())
-            .coerceIn(128L * 1024 * 1024, 1024L * 1024 * 1024)
-        val backBytes = (targetBytes / 3).coerceIn(32L * 1024 * 1024, 128L * 1024 * 1024)
+        val maxSafeBytes = (maxHeapMb * 0.35 * 1024 * 1024).toLong().coerceIn(64L * 1024 * 1024, 256L * 1024 * 1024)
+        val backBytes = (maxSafeBytes / 4).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)
         m.setOptionString("cache", "yes")
         m.setOptionString("demuxer-max-bytes", "$maxSafeBytes")
         m.setOptionString("demuxer-max-back-bytes", "$backBytes")
-        val readaheadSec = maxOf(preloadSec, 7200)
-        m.setOptionString("demuxer-readahead-secs", "$readaheadSec")
-        m.setOptionString("cache-secs", "$readaheadSec")
+        m.setOptionString("demuxer-readahead-secs", "$preloadSec")
+        m.setOptionString("cache-secs", "$preloadSec")
         m.setOptionString("demuxer-seekable-cache", "yes")
+        m.setOptionString("demuxer-lavf-buffersize", "1048576")
+        m.setOptionString("demuxer-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5")
         m.setOptionString("network-timeout", "30")
         m.setOptionString("keep-open", "yes")
         m.setOptionString("input-default-bindings", "no")
@@ -423,7 +421,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 val newItem = orig.copy(
                     url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third),
                     headers = emptyMap(),
-                    mime = null
+                    mime = "application/x-mpegURL"
                 )
                 queue[i] = newItem
                 qualityLabel[i] = preset.first
@@ -512,7 +510,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 val jfMatch = PlayerCore.matchQuality(PlayerCore.JF_PRESETS.map { it.first to Resolved("", emptyMap(), null) }, remembered)
                 val preset = PlayerCore.JF_PRESETS.firstOrNull { it.first == jfMatch?.first } ?: PlayerCore.JF_PRESETS.firstOrNull { it.first == remembered } ?: return@launch
                 if (idx != currentIndex) return@launch
-                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = emptyMap(), mime = null), preset.first)
+                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = emptyMap(), mime = "application/x-mpegURL"), preset.first)
                 showHint("画质：${preset.first}（已记住本剧设置）")
                 preResolveUpcomingMpv(idx + 1, remembered)
             } else if (cf != null) {
@@ -543,7 +541,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                     val updated = item.copy(
                         url = client.transcodeUrl(jfId, item.jfMediaSourceId, preset.second, preset.third),
                         headers = emptyMap(),
-                        mime = null
+                        mime = "application/x-mpegURL"
                     )
                     withContext(Dispatchers.Main) {
                         originals.getOrPut(idx) { item }
@@ -685,7 +683,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 val label = preset.first
                 Repo.store.setQualityForSeries(orig.seriesKey, label)
                 toast("直连播放失败，已切换为服务器转码（已记住本剧设置）")
-                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = client.authHeaders()), label)
+                replaceCurrent(orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, preset.second, preset.third), headers = client.authHeaders(), mime = "application/x-mpegURL"), label)
                 preResolveUpcomingMpv(idx + 1, label)
                 return
             }
@@ -1032,7 +1030,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             if (!scrubbing) {
                 timeBar.setDuration(durMs.coerceAtLeast(0))
                 timeBar.setPosition(posMs.coerceAtLeast(0))
-                timeBar.setBufferedPosition(((posSec + max(0.0, cacheSec - posSec)) * 1000).toLong())
+                timeBar.setBufferedPosition(((posSec + max(0.0, cacheSec)) * 1000).toLong())
                 posView.text = fmt(posMs)
                 durView.text = fmt(durMs)
                 updateMediaSessionState()
@@ -1763,7 +1761,7 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 val client = Repo.jellyfin(orig.sourceId ?: return) ?: return
                 val presets = PlayerCore.JF_PRESETS
                 val opts = listOf<Pair<String, () -> PlayItem>>("原画" to { orig }) + presets.map { (label, br, w) ->
-                    label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap(), mime = null) }
+                    label to { orig.copy(url = client.transcodeUrl(jfId, orig.jfMediaSourceId, br, w), headers = emptyMap(), mime = "application/x-mpegURL") }
                 }
                 pickQuality(idx, opts, anchor)
             }
@@ -2147,9 +2145,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
             hintView.visibility = View.GONE
             dismissResumePrompt()
         } else {
-            if (isFinishing || isDestroyed || lifecycle.currentState <= androidx.lifecycle.Lifecycle.State.CREATED) {
+            if (isFinishing || isDestroyed) {
                 stopPlaybackAndCleanUp()
-                finish()
                 return
             }
             PlayerOrientation.apply(this)

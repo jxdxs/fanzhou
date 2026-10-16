@@ -42,7 +42,6 @@ fun SettingsScreen() {
     var voiceEnhance by remember { mutableStateOf(store.voiceEnhance) }
     var volumeBoost by remember { mutableFloatStateOf(store.volumeBoost) }
     var autoNext by remember { mutableStateOf(store.autoPlayNext) }
-    var bufferMb by remember { mutableIntStateOf(store.bufferSizeMb) }
     var preloadMin by remember { mutableIntStateOf(store.preloadMinutes) }
     var gridMin by remember { mutableIntStateOf(store.gridColumnsMin) }
     var core by remember { mutableStateOf(store.playerCore) }
@@ -80,7 +79,7 @@ fun SettingsScreen() {
             }
             val introText = if (introSkip == 0) "片头关" else "片头 ${introSkip} 秒"
             val outroText = if (outroSkip == 0) "片尾关" else "片尾 ${outroSkip} 秒"
-            Group("播放", "缓存 ${bufferMb}MB / ${preloadMin}分钟 · ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒 · $introText · $outroText" + if (autoNext) " · 自动下一集" else "") {
+            Group("播放", "预加载 ${preloadMin}分钟 · ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}× · 快进 ${step} 秒 · $introText · $outroText" + if (autoNext) " · 自动下一集" else "") {
                 Text("默认倍速：${"%.2f".format(speed).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(speed, { speed = (Math.round(it * 4) / 4f); store.defaultSpeed = speed }, valueRange = 0.5f..3f, steps = 9)
                 Text("双击快进/快退：${step} 秒", fontSize = 14.sp)
@@ -90,23 +89,13 @@ fun SettingsScreen() {
                 Text("跳过片尾：${if (outroSkip == 0) "关闭" else "${outroSkip} 秒"}", fontSize = 14.sp)
                 Slider(outroSkip.toFloat(), { outroSkip = (Math.round(it / 5) * 5).toInt(); store.outroSkipSec = outroSkip }, valueRange = 0f..300f, steps = 59)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("双条件协同缓存控制", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text("必须【同时满足】缓存空间与预加载时长两个条件才会停止预加载，避免任一条件满足就中断预读", fontSize = 12.sp, color = TextDim)
-                Spacer(Modifier.height(4.dp))
-                Text("1. 播放缓存大小：${bufferMb} MB", fontSize = 14.sp)
+                Text("预加载缓冲时长：${preloadMin} 分钟", fontSize = 14.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(64 to "64M", 128 to "128M", 256 to "256M", 512 to "512M").forEach { (mb, name) ->
-                        FilterChip(selected = bufferMb == mb, onClick = { bufferMb = mb; store.bufferSizeMb = mb }, label = { Text(name) })
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
-                Text("2. 预加载缓冲时长：${preloadMin} 分钟", fontSize = 14.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(1 to "1 分钟", 2 to "2 分钟", 3 to "3 分钟", 5 to "5 分钟").forEach { (m, name) ->
+                    listOf(3 to "3 分钟", 5 to "5 分钟", 8 to "8 分钟").forEach { (m, name) ->
                         FilterChip(selected = preloadMin == m, onClick = { preloadMin = m; store.preloadMinutes = m }, label = { Text(name) })
                     }
                 }
-                Text("播放器将持续预加载，直到同时达到 ${bufferMb}MB 与 ${preloadMin} 分钟深度，确保快进秒切与大文件流畅播放", fontSize = 12.sp, color = TextDim)
+                Text("播放器将持续预加载设定时长的流媒体数据，保障拖动快进与换集起播秒开流畅，并内置堆内存安全防护杜绝闪退", fontSize = 12.sp, color = TextDim)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("字幕大小：${"%.2f".format(subScale).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(subScale, { subScale = (Math.round(it * 20) / 20f); store.subtitleScale = subScale }, valueRange = 0.8f..2.2f, steps = 13)
