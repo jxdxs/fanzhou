@@ -62,36 +62,62 @@ object PlayerOrientation {
     }
 
     /**
-     * Portrait only: spreads the transport buttons across the free width of the bottom bar
-     * (bar width minus the right-hand button group), so the row has no dead space on the right.
-     * Re-runs whenever the bar's width changes; landscape keeps the fixed sizes set elsewhere.
+     * Portrait only: every visible bottom-bar button (快退/播放/快进 on the left, 倍速/音轨/选集/AB/
+     * 设置 on the right) gets the SAME size, capped at 44dp, and the leftover width is shared out as
+     * equal gaps between all of them, so there is no wide dead zone anywhere (2.3.50; 2.3.49 made
+     * the left three oversized). Landscape restores the original layout values.
      */
     fun stretchRow(a: Activity, row: android.view.ViewGroup, right: View?) {
         val bar = row.parent as? View ?: return
         fun apply() {
-            (right as? android.view.ViewGroup)?.let { compactRightGroup(a, it, isPortrait(a)) }
-            if (!isPortrait(a) || bar.width <= 0) return
+            val rg = right as? android.view.ViewGroup
+            if (!isPortrait(a)) {
+                rg?.let { restoreGroup(it) }
+                for (i in 0 until row.childCount) { val c = row.getChildAt(i); val o = c.getTag(R_ORIG) as? IntArray ?: continue
+                    (c.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.let { if (it.leftMargin != o[1] || it.rightMargin != o[2]) { it.leftMargin = o[1]; it.rightMargin = o[2]; it.marginStart = o[3]; it.marginEnd = o[4]; c.layoutParams = it } } }
+                return
+            }
+            if (bar.width <= 0) return
             val d = a.resources.displayMetrics.density
-            // Free space = from the row's start to where the right-hand group begins.
-            val r = right?.takeIf { it.visibility == View.VISIBLE && it.width > 0 }
-            val rightEdge = r?.let { it.right - visibleChildrenWidth(it) } ?: bar.width
-            val avail = rightEdge - row.left - row.paddingStart - row.paddingEnd - (8 * d).toInt()
-            val kids = (0 until row.childCount).map { row.getChildAt(it) }.filter { it.visibility != View.GONE }
-            if (avail <= 0 || kids.isEmpty()) return
-            // Portrait width is tight: drop the 5dp side margins so the buttons themselves get it.
-            for (k in kids) (k.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.let { if (it.leftMargin != 0 || it.rightMargin != 0) { it.leftMargin = 0; it.rightMargin = 0; it.marginStart = 0; it.marginEnd = 0; k.layoutParams = it } }
-            val margins = kids.sumOf { k -> (k.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.let { it.leftMargin + it.rightMargin } ?: 0 }
-            val w = ((avail - margins) / kids.size).coerceAtMost((64 * d).toInt())  // bar is 72dp tall
-            val h = w  // keep square: the skip icons are stretched backgrounds and would distort
+            val leftKids = (0 until row.childCount).map { row.getChildAt(it) }.filter { it.visibility != View.GONE }
+            val rightKids = rg?.let { g -> (0 until g.childCount).map { g.getChildAt(it) }.filter { it.visibility != View.GONE } } ?: emptyList()
+            val n = leftKids.size + rightKids.size
+            if (n == 0) return
+            if (row.paddingStart != 0 || row.paddingEnd != 0) row.setPaddingRelative(0, row.paddingTop, 0, row.paddingBottom)
+            rg?.let { if (it.paddingStart != 0 || it.paddingEnd != 0) it.setPaddingRelative(0, it.paddingTop, 0, it.paddingBottom) }
+            val avail = bar.width - bar.paddingLeft - bar.paddingRight - (8 * d).toInt()
+            val s = minOf((44 * d).toInt(), avail / n)
+            val m = ((avail - n * s) / (2 * n)).coerceAtLeast(0)
             var changed = false
-            for (k in kids) {
-                val targets = listOf(k) + ((k as? android.widget.FrameLayout)?.let { f -> (0 until f.childCount).map { f.getChildAt(it) } } ?: emptyList())
-                for (t in targets) {
-                    val lp = t.layoutParams ?: continue
-                    if (lp.width != w || lp.height != h) { lp.width = w; lp.height = h; t.layoutParams = lp; changed = true }
+            fun setLp(v: View, w: Int, h: Int?, margin: Int?) {
+                val lp = v.layoutParams ?: return
+                var c = false
+                if (lp.width != w) { lp.width = w; c = true }
+                if (h != null && lp.height != h) { lp.height = h; c = true }
+                if (margin != null) (lp as? android.view.ViewGroup.MarginLayoutParams)?.let {
+                    if (it.leftMargin != margin || it.rightMargin != margin || it.marginStart != margin || it.marginEnd != margin) { it.leftMargin = margin; it.rightMargin = margin; it.marginStart = margin; it.marginEnd = margin; c = true }
+                }
+                if (c) { v.layoutParams = lp; changed = true }
+            }
+            for (k in leftKids) {
+                saveOrig(k)
+                setLp(k, s, s, m)
+                (k as? android.widget.FrameLayout)?.let { f -> for (i in 0 until f.childCount) setLp(f.getChildAt(i), s, s, null) }
+            }
+            val glyph = (24 * d).toInt()
+            for (c in rightKids) {
+                saveOrig(c)
+                setLp(c, s, null, m)
+                if (c is android.widget.ImageView) {
+                    val hp = ((s - glyph) / 2).coerceAtLeast(0)
+                    if (c.paddingLeft != hp || c.paddingRight != hp) c.setPadding(hp, c.paddingTop, hp, c.paddingBottom)
+                } else if (c is android.widget.TextView) {
+                    if (c.minWidth != 0) { c.minWidth = 0; c.minimumWidth = 0 }
+                    if (c.paddingLeft != 0 || c.paddingRight != 0) c.setPadding(0, c.paddingTop, 0, c.paddingBottom)
+                    if (c.id == com.kevin.fanzhou.R.id.fz_speed || c.id == com.kevin.fanzhou.R.id.mpv_speed) c.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
                 }
             }
-            if (changed) row.requestLayout()
+            if (changed) { row.requestLayout(); rg?.requestLayout() }
         }
         if (bar.getTag(R_TAG) == null) {
             bar.setTag(R_TAG, true)
@@ -100,40 +126,24 @@ object PlayerOrientation {
         }
         bar.post { apply() }
     }
-    /**
-     * Portrait: tighten the right-hand group (倍速/音轨/选集/AB/字幕/设置) so its free gaps go to
-     * 快退/播放/快进 instead. Icon buttons 48dp → 36dp wide (24dp icon kept), 倍速 60dp → 40dp, no
-     * side margins. Landscape restores the layout values saved on first use.
-     */
-    private fun compactRightGroup(a: Activity, g: android.view.ViewGroup, portrait: Boolean) {
-        val d = a.resources.displayMetrics.density
+    private fun saveOrig(c: View) {
+        if (c.getTag(R_ORIG) != null) return
+        val lp = c.layoutParams as? android.view.ViewGroup.MarginLayoutParams ?: return
+        c.setTag(R_ORIG, intArrayOf(lp.width, lp.leftMargin, lp.rightMargin, lp.marginStart, lp.marginEnd,
+            c.paddingLeft, c.paddingTop, c.paddingRight, c.paddingBottom, c.minimumWidth, ((c as? android.widget.TextView)?.textSize ?: 0f).toInt()))
+    }
+    /** Landscape: put the right-hand group back exactly as the layout defined it. */
+    private fun restoreGroup(g: android.view.ViewGroup) {
         for (i in 0 until g.childCount) {
             val c = g.getChildAt(i)
+            val o = c.getTag(R_ORIG) as? IntArray ?: continue
             val lp = c.layoutParams as? android.view.ViewGroup.MarginLayoutParams ?: continue
-            @Suppress("UNCHECKED_CAST")
-            val orig = (c.getTag(R_ORIG) as? IntArray) ?: intArrayOf(lp.width, lp.leftMargin, lp.rightMargin, lp.marginStart, lp.marginEnd,
-                c.paddingLeft, c.paddingTop, c.paddingRight, c.paddingBottom, c.minimumWidth, ((c as? android.widget.TextView)?.textSize ?: 0f).toInt()).also { c.setTag(R_ORIG, it) }
-            val isText = c is android.widget.TextView && c !is android.widget.Button && c.javaClass.simpleName.let { it == "TextView" || it.endsWith("AppCompatTextView") || it.endsWith("MaterialTextView") }
-            if (portrait) {
-                lp.leftMargin = 0; lp.rightMargin = 0; lp.marginStart = 0; lp.marginEnd = 0
-                if (isText && orig[0] == android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
-                    // 倍速 label: just wide enough for "1.25x"
-                    c.minimumWidth = (40 * d).toInt(); (c as android.widget.TextView).minWidth = (40 * d).toInt()
-                    c.setPadding((3 * d).toInt(), c.paddingTop, (3 * d).toInt(), c.paddingBottom)
-                    c.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
-                } else if (orig[0] > (36 * d).toInt()) {
-                    lp.width = (36 * d).toInt()
-                    val vPad = orig[6]
-                    val hPad = ((36 * d - (orig[0] - orig[5] - orig[7])) / 2).toInt().coerceAtLeast(0)
-                    c.setPadding(hPad, vPad, hPad, orig[8])
-                }
-            } else {
-                lp.width = orig[0]; lp.leftMargin = orig[1]; lp.rightMargin = orig[2]; lp.marginStart = orig[3]; lp.marginEnd = orig[4]
-                c.setPadding(orig[5], orig[6], orig[7], orig[8])
-                c.minimumWidth = orig[9]
-                if (c is android.widget.TextView && orig[10] > 0) { c.minWidth = orig[9]; c.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, orig[10].toFloat()) }
-            }
+            if (lp.width == o[0] && lp.leftMargin == o[1] && lp.rightMargin == o[2] && c.paddingLeft == o[5]) continue
+            lp.width = o[0]; lp.leftMargin = o[1]; lp.rightMargin = o[2]; lp.marginStart = o[3]; lp.marginEnd = o[4]
             c.layoutParams = lp
+            c.setPadding(o[5], o[6], o[7], o[8])
+            c.minimumWidth = o[9]
+            if (c is android.widget.TextView && o[10] > 0) { c.minWidth = o[9]; c.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, o[10].toFloat()) }
         }
     }
     private val R_ORIG = com.kevin.fanzhou.R.id.fz_orig_tag
