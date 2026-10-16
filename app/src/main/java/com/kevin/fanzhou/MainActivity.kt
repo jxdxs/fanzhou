@@ -56,8 +56,9 @@ object Routes {
         "cloud/$sid?dir=${Uri.encode(dir ?: "")}&title=${Uri.encode(title ?: "")}&path=${Uri.encode(path.joinToString("\u001F"))}"
     fun open(s: com.kevin.fanzhou.data.Source) = when {
         s.isJellyfin -> "home"
-        s.isCloud -> cloud(s.id)
-        else -> dav(s.id) // WebDAV and SMB share the folder screen
+        // WebDAV 与网盘共用同一浏览页（缩略图、续播、最近播放、收藏、搜索、多视图）
+        s.isCloud || s.type == com.kevin.fanzhou.data.Source.TYPE_WEBDAV -> cloud(s.id)
+        else -> dav(s.id) // SMB 仍用文件夹页
     }
 }
 

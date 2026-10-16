@@ -27,6 +27,11 @@ class DualConditionLoadControl(
     private val minBufferUs: Long = 30_000_000L,
 ) : LoadControl {
 
+    /** 硬上限：软上限 ×1.25，且不超过 JVM 最大堆的 45%。 */
+    private val hardCapBytes: Long =
+        minOf((maxSafeBytes * 1.25).toLong(), (Runtime.getRuntime().maxMemory() * 0.45).toLong())
+            .coerceAtLeast(maxSafeBytes)
+
     override fun onPrepared() {
         base.onPrepared(PlayerId.UNSET)
     }
@@ -107,7 +112,8 @@ class DualConditionLoadControl(
         val allocated = allocator.totalBytesAllocated.toLong()
         // 1. 堆内存硬保护：超过安全上限立即停止加载，坚决杜绝 OOM 导致播放界面闪退
         if (allocated >= maxSafeBytes) {
-            return false
+            // 回看缓冲也占用同一预算：前向不足保底时允许小幅越过软上限（不超过硬上限），避免回看缓冲挤占导致前向断流
+            return parameters.bufferedDurationUs < minBufferUs && allocated < hardCapBytes
         }
         // 2. 基础保底缓冲：未满 minBufferUs (30秒) 持续缓冲
         if (parameters.bufferedDurationUs < minBufferUs) {
@@ -128,7 +134,7 @@ class DualConditionLoadControl(
     ): Boolean {
         val allocated = allocator.totalBytesAllocated.toLong()
         if (allocated >= maxSafeBytes) {
-            return false
+            return bufferedDurationUs < minBufferUs && allocated < hardCapBytes
         }
         if (bufferedDurationUs < minBufferUs) {
             return true

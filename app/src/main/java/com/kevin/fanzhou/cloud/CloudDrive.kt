@@ -110,6 +110,7 @@ abstract class CloudDrive(var source: Source) {
             Source.TYPE_ALIYUN -> AliyunDrive(source)
             Source.TYPE_123 -> Drive123(source)
             Source.TYPE_GDRIVE -> GoogleDrive(source)
+            Source.TYPE_WEBDAV -> WebDavDrive(source)
             else -> throw IllegalArgumentException(source.type)
         }
 
@@ -117,7 +118,8 @@ abstract class CloudDrive(var source: Source) {
         fun get(sourceId: String): CloudDrive? {
             val s = Repo.store.get(sourceId) ?: return null
             val d = drives[sourceId]
-            if (d != null && d.source.type == s.type && d.source.token == s.token) return d
+            if (d != null && d.source.type == s.type && d.source.token == s.token &&
+                d.source.url == s.url && d.source.username == s.username && d.source.password == s.password) return d
             return create(s).also { drives[sourceId] = it }
         }
 

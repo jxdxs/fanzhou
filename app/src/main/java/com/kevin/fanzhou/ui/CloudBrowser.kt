@@ -519,15 +519,15 @@ fun CloudScreen(nav: NavHostController, sid: String, dirId: String?, title: Stri
                 ) {
                     Spacer(Modifier.height(80.dp))
                     if (expired) {
-                        Text("登录已失效", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text(if (drive.source.isCloud) "登录已失效" else "认证失败", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         Spacer(Modifier.height(6.dp))
                         Text(error ?: "", color = TextDim, fontSize = 13.sp)
                         Spacer(Modifier.height(16.dp))
-                        Button(onClick = { nav.navigate(Routes.cloudLogin(drive.source.type, sid)) }) { Text("重新登录") }
+                        Button(onClick = { nav.navigate(Routes.editSource(drive.source.type, sid)) }) { Text("重新登录") }
                         TextButton(onClick = { reload++ }) { Text("重试") }
                     } else {
                         ErrorBox("加载失败：$error", { reload++ }, Modifier)
-                        TextButton(onClick = { nav.navigate(Routes.cloudLogin(drive.source.type, sid)) }) { Text("重新登录") }
+                        TextButton(onClick = { nav.navigate(Routes.editSource(drive.source.type, sid)) }) { Text("重新登录") }
                     }
                 }
                 entries == null -> Column(fill) {

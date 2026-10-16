@@ -252,7 +252,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         val preloadSec = preloadMinutes * 60
         val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
         val maxSafeBytes = (maxHeapMb * 0.35 * 1024 * 1024).toLong().coerceIn(64L * 1024 * 1024, 256L * 1024 * 1024)
-        val backBytes = (maxSafeBytes / 4).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)
+        // 回看缓存放大到前向缓存的一半（32~128MB，原生内存不占 Java 堆），连续快退直接在缓存内完成
+        val backBytes = (maxSafeBytes / 2).coerceIn(32L * 1024 * 1024, 128L * 1024 * 1024)
         m.setOptionString("cache", "yes")
         m.setOptionString("demuxer-max-bytes", "$maxSafeBytes")
         m.setOptionString("demuxer-max-back-bytes", "$backBytes")

@@ -424,6 +424,38 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private val hideHint = Runnable { hintView.visibility = View.GONE }
+    // ---------------- 连续快退/快进合并 ----------------
+    // 连点快退时每次 seekTo 都会重置解码器并从关键帧重新解码；这里把短时间内的多次点击合并：
+    // 第一次立即跳转，后续点击在已挂起的目标上累加，停手 160ms 后只执行一次精确跳转。
+    private var burstTargetMs = -1L
+    private var burstLastTapAt = 0L
+    private val burstApply = Runnable {
+        if (burstTargetMs >= 0) player.seekTo(burstTargetMs)
+    }
+    private val burstReset = Runnable { burstTargetMs = -1L }
+
+    private fun burstSeek(deltaMs: Long) {
+        if (!::player.isInitialized) return
+        val now = android.os.SystemClock.uptimeMillis()
+        val inBurst = burstTargetMs >= 0 && now - burstLastTapAt < 600
+        val base = if (inBurst) burstTargetMs else player.currentPosition
+        val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
+        var target = max(0L, base + deltaMs)
+        if (dur != null) target = target.coerceAtMost(max(0L, dur - 1000L))
+        burstTargetMs = target
+        burstLastTapAt = now
+        handler.removeCallbacks(burstApply)
+        handler.removeCallbacks(burstReset)
+        if (inBurst) handler.postDelayed(burstApply, 160) else player.seekTo(target)
+        handler.postDelayed(burstReset, 700)
+    }
+
+    private fun backBufferMsFor(preloadMinutes: Int): Int = when (preloadMinutes) {
+        8 -> 180_000
+        5 -> 120_000
+        else -> 90_000
+    }
+
     private fun showHint(text: String, sticky: Boolean = false) {
         hintView.text = text
         hintView.visibility = View.VISIBLE
@@ -524,8 +556,8 @@ class PlayerActivity : ComponentActivity() {
                 val w = playerView.width
                 val step = Repo.store.seekStepSec * 1000L
                 when {
-                    e.x < w * 0.33f -> player.seekTo(max(0, player.currentPosition - step))
-                    e.x > w * 0.67f -> player.seekTo(player.currentPosition + step)
+                    e.x < w * 0.33f -> burstSeek(-step)
+                    e.x > w * 0.67f -> burstSeek(step)
                     else -> { if (player.isPlaying) player.pause() else player.play(); showHint(if (player.isPlaying) "▶" else "❚❚") }
                 }
                 return true
@@ -631,7 +663,9 @@ class PlayerActivity : ComponentActivity() {
             )
             .setTargetBufferBytes(maxSafeBytes.toInt())
             .setPrioritizeTimeOverSizeThresholds(true)
-            .setBackBuffer(60_000, true)
+            // 回看缓冲随预加载档位放大（3/5/8 分钟 → 1.5/2/3 分钟），连续快退直接命中内存缓冲，
+            // 不再越界触发「清空全部前向缓冲 + 重新联网」导致的卡顿。
+            .setBackBuffer(backBufferMsFor(preloadMinutes), true)
             .build()
         val loadControl = DualConditionLoadControl(
             base = baseLoadControl,
@@ -654,7 +688,10 @@ class PlayerActivity : ComponentActivity() {
             .setPreferredAudioLanguages("zh", "chi", "zho", "cmn", "ja", "en")
             .setPreferredTextLanguages("zh", "chi", "zho", "chs", "cht")
             .build()
-        playerView.player = player
+        playerView.player = object : androidx.media3.common.ForwardingPlayer(player) {
+            override fun seekBack() = burstSeek(-Repo.store.seekStepSec * 1000L)
+            override fun seekForward() = burstSeek(Repo.store.seekStepSec * 1000L)
+        }
         player.addListener(listener)
         applyAudioBoost()
         mediaSession = MediaSession.Builder(this, player)
@@ -2444,14 +2481,14 @@ class PlayerActivity : ComponentActivity() {
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                 dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
-                player.seekTo(player.currentPosition + step)
+                burstSeek(step)
                 showHint("⏩ ${Repo.store.seekStepSec}秒")
                 return true
             }
             KeyEvent.KEYCODE_MEDIA_REWIND -> {
                 dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
-                player.seekTo(max(0, player.currentPosition - step))
+                burstSeek(-step)
                 showHint("⏪ ${Repo.store.seekStepSec}秒")
                 return true
             }
@@ -2481,14 +2518,14 @@ class PlayerActivity : ComponentActivity() {
             KeyEvent.KEYCODE_DPAD_LEFT -> {
                 dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
-                player.seekTo(max(0, player.currentPosition - step))
+                burstSeek(-step)
                 showHint("⏪ ${Repo.store.seekStepSec}秒")
                 return true
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 dismissResumePrompt()
                 val step = Repo.store.seekStepSec * 1000L
-                player.seekTo(player.currentPosition + step)
+                burstSeek(step)
                 showHint("⏩ ${Repo.store.seekStepSec}秒")
                 return true
             }
