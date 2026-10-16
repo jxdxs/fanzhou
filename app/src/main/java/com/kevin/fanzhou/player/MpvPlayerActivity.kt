@@ -250,16 +250,18 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         m.setOptionString("tls-verify", "no")
         val bufMb = Repo.store.bufferSizeMb
         val preloadMinutes = Repo.store.preloadMinutes
-        val preloadSec = (preloadMinutes * 60).coerceIn(60, 300)
+        val preloadSec = (preloadMinutes * 60).coerceIn(60, 600)
         val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-        val safeMpvMb = minOf(bufMb, maxOf(64, (maxHeapMb * 0.45).toInt()))
-        val maxBytes = safeMpvMb * 1024L * 1024L
-        val backBytes = (maxBytes / 3).coerceIn(32L * 1024 * 1024, 128L * 1024 * 1024)
+        val targetBytes = bufMb * 1024L * 1024L
+        val maxSafeBytes = maxOf(targetBytes, (maxHeapMb * 0.60 * 1024 * 1024).toLong())
+            .coerceIn(128L * 1024 * 1024, 1024L * 1024 * 1024)
+        val backBytes = (targetBytes / 3).coerceIn(32L * 1024 * 1024, 128L * 1024 * 1024)
         m.setOptionString("cache", "yes")
-        m.setOptionString("demuxer-max-bytes", "$maxBytes")
+        m.setOptionString("demuxer-max-bytes", "$maxSafeBytes")
         m.setOptionString("demuxer-max-back-bytes", "$backBytes")
-        m.setOptionString("demuxer-readahead-secs", "$preloadSec")
-        m.setOptionString("cache-secs", "$preloadSec")
+        val readaheadSec = maxOf(preloadSec, 7200)
+        m.setOptionString("demuxer-readahead-secs", "$readaheadSec")
+        m.setOptionString("cache-secs", "$readaheadSec")
         m.setOptionString("demuxer-seekable-cache", "yes")
         m.setOptionString("network-timeout", "30")
         m.setOptionString("keep-open", "yes")
@@ -1218,10 +1220,10 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
         posSec = ms / 1000.0
     }
 
-    private fun seekRelative(sec: Int) {
+    private fun seekRelative(sec: Int, showHint: Boolean = true) {
         dismissResumePrompt()
         mpv?.command(arrayOf("seek", sec.toString(), "relative"))
-        showHint(if (sec < 0) "⏪ ${-sec}秒" else "⏩ ${sec}秒")
+        if (showHint) showHint(if (sec < 0) "⏪ ${-sec}秒" else "⏩ ${sec}秒")
     }
 
     private fun setSpeed(s: Double) {
@@ -1915,8 +1917,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
                 val w = touch.width
                 val step = Repo.store.seekStepSec
                 when {
-                    e.x < w * 0.33f -> seekRelative(-step)
-                    e.x > w * 0.67f -> seekRelative(step)
+                    e.x < w * 0.33f -> seekRelative(-step, showHint = false)
+                    e.x > w * 0.67f -> seekRelative(step, showHint = false)
                     else -> { togglePause(); showHint(if (paused) "▶" else "❚❚") }
                 }
                 return true

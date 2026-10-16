@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Replaces Media3's full-screen 60% black dim: clear in the middle, soft shade only behind the bottom controls. -->
+<!-- Transparent scrim so video content underneath controls is not obscured. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <gradient android:angle="90" android:type="linear"
-        android:startColor="#B3000000" android:centerColor="#00000000" android:endColor="#00000000"
-        android:centerY="0.28" />
+    <solid android:color="@android:color/transparent" />
 </shape>

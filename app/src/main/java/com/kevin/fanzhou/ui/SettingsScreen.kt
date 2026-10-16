@@ -91,7 +91,7 @@ fun SettingsScreen() {
                 Slider(outroSkip.toFloat(), { outroSkip = (Math.round(it / 5) * 5).toInt(); store.outroSkipSec = outroSkip }, valueRange = 0f..300f, steps = 59)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("双条件协同缓存控制", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text("结合「缓存大小」与「预加载时长」双重条件平滑流式加载，彻底消除快进卡顿与突发加载停顿", fontSize = 12.sp, color = TextDim)
+                Text("必须【同时满足】缓存空间与预加载时长两个条件才会停止预加载，避免任一条件满足就中断预读", fontSize = 12.sp, color = TextDim)
                 Spacer(Modifier.height(4.dp))
                 Text("1. 播放缓存大小：${bufferMb} MB", fontSize = 14.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -106,7 +106,7 @@ fun SettingsScreen() {
                         FilterChip(selected = preloadMin == m, onClick = { preloadMin = m; store.preloadMinutes = m }, label = { Text(name) })
                     }
                 }
-                Text("播放器将持续预加载未来 ${preloadMin} 分钟音视频流（上限 ${bufferMb}MB），点击快进时秒级响应已预读数据", fontSize = 12.sp, color = TextDim)
+                Text("播放器将持续预加载，直到同时达到 ${bufferMb}MB 与 ${preloadMin} 分钟深度，确保快进秒切与大文件流畅播放", fontSize = 12.sp, color = TextDim)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("字幕大小：${"%.2f".format(subScale).trimEnd('0').trimEnd('.')}×", fontSize = 14.sp)
                 Slider(subScale, { subScale = (Math.round(it * 20) / 20f); store.subtitleScale = subScale }, valueRange = 0.8f..2.2f, steps = 13)

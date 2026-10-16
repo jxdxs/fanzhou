@@ -58,6 +58,7 @@ import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import androidx.media3.ui.DefaultTimeBar
 import androidx.media3.ui.TimeBar
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -521,8 +522,8 @@ class PlayerActivity : ComponentActivity() {
                 val w = playerView.width
                 val step = Repo.store.seekStepSec * 1000L
                 when {
-                    e.x < w * 0.33f -> { player.seekTo(max(0, player.currentPosition - step)); showHint("⏪ ${Repo.store.seekStepSec}秒") }
-                    e.x > w * 0.67f -> { player.seekTo(player.currentPosition + step); showHint("⏩ ${Repo.store.seekStepSec}秒") }
+                    e.x < w * 0.33f -> player.seekTo(max(0, player.currentPosition - step))
+                    e.x > w * 0.67f -> player.seekTo(player.currentPosition + step)
                     else -> { if (player.isPlaying) player.pause() else player.play(); showHint(if (player.isPlaying) "▶" else "❚❚") }
                 }
                 return true
@@ -613,21 +614,32 @@ class PlayerActivity : ComponentActivity() {
         val bufMb = Repo.store.bufferSizeMb
         val preloadMinutes = Repo.store.preloadMinutes
         val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-        val safeBufMb = minOf(bufMb, maxOf(64, (maxHeapMb * 0.45).toInt()))
-        val targetBytes = safeBufMb * 1024 * 1024
-        val maxBufferMs = (preloadMinutes * 60 * 1000).coerceIn(60_000, 300_000)
-        val minBufferMs = (maxBufferMs * 0.75).toInt().coerceIn(30_000, 240_000)
-        val loadControl = DefaultLoadControl.Builder()
+        val targetBytes = bufMb * 1024L * 1024L
+        val targetDurationUs = preloadMinutes * 60 * 1_000_000L
+        val maxSafeBytes = maxOf(targetBytes, (maxHeapMb * 0.60 * 1024 * 1024).toLong())
+            .coerceIn(128L * 1024 * 1024, 1024L * 1024 * 1024)
+
+        val allocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
+        val maxBufferMs = (preloadMinutes * 60 * 1000).coerceAtLeast(300_000)
+        val baseLoadControl = DefaultLoadControl.Builder()
+            .setAllocator(allocator)
             .setBufferDurationsMs(
-                minBufferMs,
+                30_000,
                 maxBufferMs,
                 1500,
                 2500
             )
-            .setTargetBufferBytes(targetBytes)
-            .setPrioritizeTimeOverSizeThresholds(false)
+            .setTargetBufferBytes(targetBytes.toInt().coerceAtLeast(DefaultLoadControl.DEFAULT_MIN_BUFFER_SIZE))
+            .setPrioritizeTimeOverSizeThresholds(true)
             .setBackBuffer(60_000, true)
             .build()
+        val loadControl = DualConditionLoadControl(
+            base = baseLoadControl,
+            allocator = allocator,
+            targetBytes = targetBytes,
+            targetDurationUs = targetDurationUs,
+            maxSafeBytes = maxSafeBytes
+        )
         player = ExoPlayer.Builder(this, renderers)
             .setLoadControl(loadControl)
             .setSeekBackIncrementMs(Repo.store.seekStepSec * 1000L)
