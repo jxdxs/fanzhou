@@ -104,9 +104,20 @@ object EpisodePopup {
             if (progress > 0f) {
                 thumbBox.addView(View(ctx).apply { setBackgroundColor(0x66000000) },
                     FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, px(3f), Gravity.BOTTOM))
-                thumbBox.addView(View(ctx).apply { setBackgroundColor(if (finished) 0xFF8E8E93.toInt() else ACCENT) },
+                thumbBox.addView(View(ctx).apply { setBackgroundColor(ACCENT) },
                     FrameLayout.LayoutParams((thumbW * progress).toInt().coerceAtLeast(px(3f)), px(3f), Gravity.BOTTOM or Gravity.START))
             }
+            if (finished) thumbBox.addView(TextView(ctx).apply {
+                text = "✓"
+                gravity = Gravity.CENTER
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, Typeface.BOLD)
+                includeFontPadding = false
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xE60288D1.toInt()) }
+            }, FrameLayout.LayoutParams(px(18f), px(18f), Gravity.TOP or Gravity.END).apply {
+                setMargins(0, px(3f), px(3f), 0)
+            })
             if (isCur) thumbBox.addView(TextView(ctx).apply {
                 text = "播放中"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
