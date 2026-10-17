@@ -161,6 +161,9 @@ class JellyfinClient(val source: Source) {
         )
     }
 
+    /** Small 16:9 episode still for the player's 选集 list. */
+    fun episodeThumb(itemId: String, maxWidth: Int = 320): String = img("$base/Items/$itemId/Images/Primary?maxWidth=$maxWidth&quality=80")
+
     fun primaryImage(item: JfItem, maxHeight: Int = 480): String? = primaryImage0(item, maxHeight)?.let(::img)
     fun seriesPoster(item: JfItem, maxHeight: Int = 480): String? = seriesPoster0(item, maxHeight)?.let(::img)
     fun backdrop(item: JfItem, maxWidth: Int = 1280): String? = backdrop0(item, maxWidth)?.let(::img)

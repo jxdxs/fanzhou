@@ -734,8 +734,8 @@ class MpvPlayerActivity : ComponentActivity(), MPVLib.EventObserver, SurfaceHold
     /** Bottom-bar 选集 button: jump within the current queue; popup anchored at the button. */
     private fun showEpisodeMenu(anchor: View) {
         if (queue.size <= 1) { toast("当前只有一个视频"); return }
-        val labels = queue.map { item -> listOfNotNull(item.title, item.subtitle).joinToString(" · ") }
-        EpisodePopup.show(anchor, labels, currentIndex) { which ->
+        runCatching { saveCurrent(stopped = false) } // 选集列表显示最新播放记录
+        EpisodePopup.show(anchor, queue, currentIndex) { which ->
             if (which != currentIndex) { playIndex(which); showHint("第 ${which + 1} 集") }
         }
     }

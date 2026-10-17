@@ -1218,8 +1218,9 @@ class PlayerActivity : ComponentActivity() {
     /** Bottom-bar 选集 button: jump within the current queue; popup anchored at the button. */
     private fun showEpisodeMenu(anchor: View) {
         if (queue.size <= 1) { toast("当前只有一个视频"); return }
-        val labels = queue.map { item -> listOfNotNull(item.title, item.subtitle).joinToString(" · ") }
-        EpisodePopup.show(anchor, labels, currentIndex) { which ->
+        // 先写入当前集进度，选集列表显示的是最新播放记录
+        if (currentIndex >= 0 && player.duration > 0) saveProgress(currentIndex, player.currentPosition, player.duration, stopped = false)
+        EpisodePopup.show(anchor, queue, currentIndex) { which ->
             if (which != currentIndex) {
                 player.seekToDefaultPosition(which)
                 player.play()
